@@ -105,39 +105,21 @@ app.post("/run-agent", async (req, res) => {
 
         let chatParams = { model: modelName, messages: messagesArray };
         if (properties.effort) chatParams.reasoning_effort = properties.effort;
-        if (tools && tools.length > 0) chatParams.tools = tools;
-
-        // JSON Schema Check
+        // JSON Schema Check - Obje Üretip Kodla Diziye Çevirme (En Stabil Yol)
         if (properties.json_schema && String(properties.json_schema).trim() !== "") {
-            try {
-                // Deneme 1: Resmi OpenAI Strict (Katı) Schema Yapısı mı?
-                let schemaStr = typeof properties.json_schema === 'string' ? properties.json_schema.trim() : JSON.stringify(properties.json_schema);
-                
-                // KULLANICI JSON_SCHEMA OLARAK SADECE İÇERİĞİ GÖNDERDİYSE (SÜSLÜ PARANTEZ YOKSA) BİZ SARALIM!
-                if (!schemaStr.startsWith("{") && !schemaStr.startsWith("[")) {
-                    schemaStr = `{ "type": "object", "properties": { ${schemaStr} } }`;
-                }
-                
-                const schemaObj = JSON.parse(schemaStr);
-                if (schemaObj.type === "object" || schemaObj.properties) {
-                    if (properties.required_fields) schemaObj.required = properties.required_fields.split(',').map(item => item.trim());
-                    // JSON Schema formatı API'ye takılır
-                    chatParams.response_format = { type: "json_schema", json_schema: { name: "gaia_schema", strict: false, schema: schemaObj } };
-                } else {
-                    throw new Error("Custom Schema"); // Custom dizi veya metinleri Fallback'e atla
-                }
-            } catch (e) { 
-                // Eger JSON Schema parse edilemezse, GPT'yi zorunlu olarak "json_object" moduna geciriyoruz.
-                // Bu sayede GPT %100 JSON dondurmek ZORUNDA kalir!
-                chatParams.response_format = { type: "json_object" };
-                const fallbackMessage = "\nCRITICAL REQUIREMENT: Your FINAL response MUST be purely formatted according to this exact JSON structure and nothing else (no markdown blocks, respond strictly in JSON format):\n{\n" + properties.json_schema + "\n}";
-                
-                // system mesajimiz var mi kontrol edelim
-                if (chatParams.messages.length > 0 && chatParams.messages[0].role === "system") {
-                    chatParams.messages[0].content += fallbackMessage;
-                } else {
-                    chatParams.messages.unshift({ role: "system", content: fallbackMessage });
-                }
+            chatParams.response_format = { type: "json_object" };
+            
+            let schemaStr = typeof properties.json_schema === 'string' ? properties.json_schema.trim() : JSON.stringify(properties.json_schema);
+            if (!schemaStr.startsWith("{") && !schemaStr.startsWith("[")) {
+                schemaStr = `{\n${schemaStr}\n}`;
+            }
+
+            const schemaInst = "\n\nCRITICAL KURAL: Nihai sonucunu SADECE saf bir DÜZ JSON OBJESİ ({}) formatında ver. Aşağıdaki yapıya birebir uy. Asla array dönme, düz obje dön:\n" + schemaStr;
+            
+            if (chatParams.messages.length > 0 && chatParams.messages[0].role === "system") {
+                chatParams.messages[0].content += schemaInst;
+            } else {
+                chatParams.messages.unshift({ role: "system", content: schemaInst });
             }
         }
         
@@ -345,17 +327,27 @@ app.post("/run-agent", async (req, res) => {
         
         let parsedFinalObject = finalContent || "";
         try {
-            // Eger LLM gercekten [ "bilgi", "bilgi" ] gibi bir JSON döndüyse,
-            // bunu Bubble direkt "List of Texts" olarak tanısın diye native Array/Objecte ceviriyoruz.
+            // GPT'den dönen temiz JSON Objesini yakalama ve kullanıcının istediği
+            // ["Key: Value", "Key: Value"] (Bubble List of texts) dizisine kod ile (stabil) çevirme:
             let tempJSON = JSON.parse(parsedFinalObject);
-            if (typeof tempJSON === 'object' || Array.isArray(tempJSON)) {
+            
+            if (typeof tempJSON === 'object' && !Array.isArray(tempJSON)) {
+                let mappedList = [];
+                for (let key in tempJSON) {
+                    let val = typeof tempJSON[key] === 'object' ? JSON.stringify(tempJSON[key]) : tempJSON[key];
+                    // "Key": null gibi boş dönenleri temiz tutup stringe çevir
+                    if (val === null || val === undefined) val = ""; 
+                    mappedList.push(`${key}: ${val}`);
+                }
+                parsedFinalObject = mappedList; // Native dizi (List of Texts)
+            } else if (Array.isArray(tempJSON)) {
                 parsedFinalObject = tempJSON;
             }
         } catch (e) {
             // Düz metinse string olarak kalır.
         }
 
-        // Tüm alanların standart olarak hep yollanması (Bubble "Detect Data" Initialize hatasız eşleşsin diye)
+        // Tüm alanların standart olarak hep yollanması
         const successPayload = {
             status: "SUCCESS",
             final_json: parsedFinalObject,
