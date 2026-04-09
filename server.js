@@ -234,11 +234,14 @@ app.post("/run-agent", async (req, res) => {
                         } else { res = "Hata: handleToolCall bulunamadi."; }
                     } catch(err) { res = "Hata oluştu: " + err.message; }
                     
+                    const resStr = typeof res === 'object' ? JSON.stringify(res) : String(res);
+                    log(`<<< Tool Sonucu: ` + resStr.substring(0, 150));
+                    
                     chatParams.messages.push({
                         role: "tool",
                         tool_call_id: toolCall.id,
                         name: toolCall.function.name,
-                        content: typeof res === 'object' ? JSON.stringify(res) : String(res)
+                        content: resStr
                     });
                 }
             } else {
@@ -250,23 +253,32 @@ app.post("/run-agent", async (req, res) => {
         // -------------------------
         // BÖLÜM 4: BUBBLE'A SONUCU GÖNDER
         // -------------------------
-        // Bubble'ın veritabanına ya da "Backend Workflow" ucuna HTTP POST ile işin bittiği haberi verilir.
-        await axios.post(properties.bubble_webhook_url, {
+        // Tüm alanların standart olarak hep yollanması (Bubble "Detect Data" Initialize hatasız eşleşsin diye)
+        const successPayload = {
             status: "SUCCESS",
-            final_json: finalContent,
+            final_json: finalContent || "",
+            error_message: "",
+            auth_url: "",
+            app_name: "",
             debug_log: debugLogs.join(' | ')
-        });
+        };
+        
+        await axios.post(properties.bubble_webhook_url, successPayload);
         log("Başarı: Bubble webhook'una data postlandı.");
 
     } catch (err) {
         log("HATA: " + err.message);
-        // Hata durumunda da webhook'a sinyal gider ki sistem askıda kalmasın.
+        // Hata durumunda dahi Bubble'a tıpatıp aynı formattaki objeyi atıyoruz (Crash önlemi)
         if (properties.bubble_webhook_url) {
-            await axios.post(properties.bubble_webhook_url, {
+            const errorPayload = {
                 status: "ERROR",
-                error_message: err.message,
+                final_json: "",
+                error_message: err.message || "Unknown error",
+                auth_url: "",
+                app_name: "",
                 debug_log: debugLogs.join(' | ')
-            }).catch(e => console.log("Webhook ulaşılamadı."));
+            };
+            await axios.post(properties.bubble_webhook_url, errorPayload).catch(e => console.log("Webhook ulaşılamadı."));
         }
     }
 });
