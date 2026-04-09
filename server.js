@@ -118,7 +118,7 @@ app.post("/run-agent", async (req, res) => {
                 schemaStr = `{\n${schemaStr}\n}`;
             }
 
-            const schemaInst = "\n\nCRITICAL KURAL: Nihai sonucunu SADECE saf bir DÜZ JSON OBJESİ ({}) formatında ver. Aşağıdaki yapıya birebir uy. Asla array dönme, düz obje dön:\n" + schemaStr;
+            const schemaInst = "\n\nCRITICAL KURAL: Eğer mesajda veya talimatta bir işlem (örneğin mail at, oluştur vs) isteniyorsa, ÖNCE GEREKLİ MCP ARAÇLARINI (Tools) KULLAN. İşi gerçekte yapıp tamamlamadan sakın cevap verme!\nARAÇLARI KULLANIP İŞİ BİTİRDİKTEN SONRA nihai sonucunu SADECE saf bir DÜZ JSON OBJESİ ({}) formatında ver. Aşağıdaki yapıya birebir uy. Asla array dönme, düz obje dön:\n" + schemaStr;
             
             if (chatParams.messages.length > 0 && chatParams.messages[0].role === "system") {
                 chatParams.messages[0].content += schemaInst;
