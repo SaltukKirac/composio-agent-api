@@ -7,13 +7,19 @@ const app = express();
 app.use(express.json({ limit: '10mb' }));
 
 app.post("/run-agent", async (req, res) => {
+    // Bubble'dan Gelen Parametreler
+    const properties = req.body;
+    
+    // GÜVENLİK: Sadece yetkili (Admin API Key'i eşleşen) istekleri kabul et
+    const SECURE_API_KEY = process.env.ADMIN_API_KEY || "gaia_secure_render_key_2026"; // Bunu dilerseniz kendi özel anahtarınızla değiştirin
+    if (!properties.admin_api_key || properties.admin_api_key !== SECURE_API_KEY) {
+        return res.status(401).json({ status: "UNAUTHORIZED", message: "Geçersiz veya eksik Admin API Key!" });
+    }
+
     // Kurallar: Vercel gibi Serverless ortamlar "res.json()" komutu verildiği an işlemi keser.
     // Bu kod eğer Render, Railway veya kalıcı bir VPS Node.js üzerinde çalıştırılırsa,
     // res.json() sonrası bile işlem arka planda saatlerce güvenle devam eder.
     res.json({ status: "PROCESSING", message: "Ajan başlatıldı, arka plan süreci devraldı." });
-    
-    // Bubble'dan Gelen Parametreler
-    const properties = req.body;
     let debugLogs = [];
     const log = (msg) => {
         debugLogs.push(msg);
@@ -109,6 +115,17 @@ app.post("/run-agent", async (req, res) => {
 
         let chatParams = { model: modelName, messages: messagesArray };
         if (properties.effort) chatParams.reasoning_effort = properties.effort;
+        
+        // --- ZORUNLU TOOL SEÇİMİ (TOOL CHOICE) ---
+        if (properties.tool_choice) {
+            const tChoice = properties.tool_choice.trim();
+            if (tChoice.toLowerCase() === "required" || tChoice.toLowerCase() === "auto" || tChoice.toLowerCase() === "none") {
+                chatParams.tool_choice = tChoice.toLowerCase();
+            } else if (tChoice !== "") {
+                // Spesifik tool ismi (Örn: "gmail_send_email")
+                chatParams.tool_choice = { type: "function", function: { name: tChoice } };
+            }
+        }
         // JSON Schema Check - Obje Üretip Kodla Diziye Çevirme (En Stabil Yol)
         if (properties.json_schema && String(properties.json_schema).trim() !== "") {
             chatParams.response_format = { type: "json_object" };
