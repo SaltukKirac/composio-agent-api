@@ -9,7 +9,7 @@
   "dependencies": {
     "express": "^4.19.2",
     "openai": "^4.38.0",
-    "composio-core": "^0.3.0",
+    "composio-core": "latest",
     "axios": "^1.6.8"
   }
 }

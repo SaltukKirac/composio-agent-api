@@ -51,7 +51,14 @@ app.post("/run-agent", async (req, res) => {
         // -------------------------
         // BÖLÜM 1: AUTH KONTROLÜ
         // -------------------------
-        const entity = await composio.getEntity(properties.user_id);
+        let entity;
+        if (typeof composio.getEntity === "function") {
+            entity = await composio.getEntity(properties.user_id);
+        } else if (composio.client && typeof composio.client.getEntity === "function") {
+            entity = await composio.client.getEntity(properties.user_id);
+        } else {
+            throw new Error("getEntity fonksiyonu bulunamadı. Composio başlatılamadı.");
+        }
         
         for (const appName of requiredApps) {
             try {
@@ -78,7 +85,11 @@ app.post("/run-agent", async (req, res) => {
         // -------------------------
         let tools = [];
         if (requiredApps.size > 0) {
-            tools = await composio.getTools({ apps: Array.from(requiredApps) });
+            if (typeof composio.getTools === "function") {
+                tools = await composio.getTools({ apps: Array.from(requiredApps) });
+            } else if (typeof composio.get_tools === "function") {
+                tools = await composio.get_tools({ apps: Array.from(requiredApps) });
+            }
         }
         
         const modelName = properties.model || "gpt-5.4";
