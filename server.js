@@ -116,16 +116,23 @@ app.post("/run-agent", async (req, res) => {
         let chatParams = { model: modelName, messages: messagesArray };
         if (properties.effort) chatParams.reasoning_effort = properties.effort;
         
+        // Araçları payload'a ekle!
+        if (tools && tools.length > 0) {
+            chatParams.tools = tools;
+        }
+
         // --- ZORUNLU TOOL SEÇİMİ (TOOL CHOICE) ---
-        if (properties.tool_choice) {
+        // Sadece tools dizisinde gerçekten araç varsa 'required' zorunluluğunu gönder,
+        // aksi takdirde OpenAI 'tools yok ama required demişsin' diye 400 hatası verir!
+        if (properties.tool_choice && chatParams.tools && chatParams.tools.length > 0) {
             const tChoice = properties.tool_choice.trim();
             if (tChoice.toLowerCase() === "required" || tChoice.toLowerCase() === "auto" || tChoice.toLowerCase() === "none") {
                 chatParams.tool_choice = tChoice.toLowerCase();
             } else if (tChoice !== "") {
-                // Spesifik tool ismi (Örn: "gmail_send_email")
                 chatParams.tool_choice = { type: "function", function: { name: tChoice } };
             }
         }
+        
         // JSON Schema Check - Obje Üretip Kodla Diziye Çevirme (En Stabil Yol)
         if (properties.json_schema && String(properties.json_schema).trim() !== "") {
             chatParams.response_format = { type: "json_object" };
