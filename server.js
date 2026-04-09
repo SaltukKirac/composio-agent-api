@@ -108,12 +108,37 @@ app.post("/run-agent", async (req, res) => {
         if (tools && tools.length > 0) chatParams.tools = tools;
 
         // JSON Schema Check
-        if (properties.json_schema) {
+        if (properties.json_schema && String(properties.json_schema).trim() !== "") {
             try {
-                const schemaObj = typeof properties.json_schema === 'string' ? JSON.parse(properties.json_schema) : properties.json_schema;
-                if (properties.required_fields) schemaObj.required = properties.required_fields.split(',').map(item => item.trim());
-                chatParams.response_format = { type: "json_schema", json_schema: { name: "gaia_schema", strict: false, schema: schemaObj } };
-            } catch (e) { log("UYARI: json_schema hatali"); }
+                // Deneme 1: Resmi OpenAI Strict (Katı) Schema Yapısı mı?
+                let schemaStr = typeof properties.json_schema === 'string' ? properties.json_schema.trim() : JSON.stringify(properties.json_schema);
+                
+                // KULLANICI JSON_SCHEMA OLARAK SADECE İÇERİĞİ GÖNDERDİYSE (SÜSLÜ PARANTEZ YOKSA) BİZ SARALIM!
+                if (!schemaStr.startsWith("{") && !schemaStr.startsWith("[")) {
+                    schemaStr = `{ "type": "object", "properties": { ${schemaStr} } }`;
+                }
+                
+                const schemaObj = JSON.parse(schemaStr);
+                if (schemaObj.type === "object" || schemaObj.properties) {
+                    if (properties.required_fields) schemaObj.required = properties.required_fields.split(',').map(item => item.trim());
+                    // JSON Schema formatı API'ye takılır
+                    chatParams.response_format = { type: "json_schema", json_schema: { name: "gaia_schema", strict: false, schema: schemaObj } };
+                } else {
+                    throw new Error("Custom Schema"); // Custom dizi veya metinleri Fallback'e atla
+                }
+            } catch (e) { 
+                // Eger JSON Schema parse edilemezse, GPT'yi zorunlu olarak "json_object" moduna geciriyoruz.
+                // Bu sayede GPT %100 JSON dondurmek ZORUNDA kalir!
+                chatParams.response_format = { type: "json_object" };
+                const fallbackMessage = "\nCRITICAL REQUIREMENT: Your FINAL response MUST be purely formatted according to this exact JSON structure and nothing else (no markdown blocks, respond strictly in JSON format):\n{\n" + properties.json_schema + "\n}";
+                
+                // system mesajimiz var mi kontrol edelim
+                if (chatParams.messages.length > 0 && chatParams.messages[0].role === "system") {
+                    chatParams.messages[0].content += fallbackMessage;
+                } else {
+                    chatParams.messages.unshift({ role: "system", content: fallbackMessage });
+                }
+            }
         }
         
         // -------------------------
@@ -208,6 +233,13 @@ app.post("/run-agent", async (req, res) => {
                             });
                         } else if (item.type === "text" || item.type === "output_text" || item.type === "message") {
                             let textContent = item.text || item.output_text || item.content || "";
+                            if (Array.isArray(textContent)) {
+                                textContent = textContent.map(i => i.text || i.content || JSON.stringify(i)).join("\n");
+                            } else if (typeof textContent === 'object' && textContent.text) {
+                                textContent = textContent.text;
+                            } else if (typeof textContent === 'object' && textContent.content) {
+                                textContent = textContent.content;
+                            }
                             assistantContent += (typeof textContent === 'object' ? JSON.stringify(textContent) : String(textContent)) + "\n";
                         }
                     }
@@ -215,14 +247,17 @@ app.post("/run-agent", async (req, res) => {
                 else if (response.choices && response.choices[0] && response.choices[0].message) {
                     toolCalls = response.choices[0].message.tool_calls || [];
                     let chatMsgContent = response.choices[0].message.content || "";
+                    if (Array.isArray(chatMsgContent)) chatMsgContent = chatMsgContent.map(i => i.text || JSON.stringify(i)).join("\n");
                     assistantContent = typeof chatMsgContent === 'object' ? JSON.stringify(chatMsgContent) : chatMsgContent;
                 } else {
                     let fallBackContent = response.output_text || response.content || "";
+                    if (Array.isArray(fallBackContent)) fallBackContent = fallBackContent.map(i => i.text || JSON.stringify(i)).join("\n");
                     assistantContent = typeof fallBackContent === 'object' ? JSON.stringify(fallBackContent) : fallBackContent;
                 }
             } else {
                 toolCalls = response.choices[0].message.tool_calls || [];
                 let chatMsgContent = response.choices[0].message.content || "";
+                if (Array.isArray(chatMsgContent)) chatMsgContent = chatMsgContent.map(i => i.text || JSON.stringify(i)).join("\n");
                 assistantContent = typeof chatMsgContent === 'object' ? JSON.stringify(chatMsgContent) : chatMsgContent;
             }
             
@@ -300,10 +335,23 @@ app.post("/run-agent", async (req, res) => {
         // -------------------------
         // BÖLÜM 4: BUBBLE'A SONUCU GÖNDER
         // -------------------------
+        
+        let parsedFinalObject = finalContent || "";
+        try {
+            // Eger LLM gercekten [ "bilgi", "bilgi" ] gibi bir JSON döndüyse,
+            // bunu Bubble direkt "List of Texts" olarak tanısın diye native Array/Objecte ceviriyoruz.
+            let tempJSON = JSON.parse(parsedFinalObject);
+            if (typeof tempJSON === 'object' || Array.isArray(tempJSON)) {
+                parsedFinalObject = tempJSON;
+            }
+        } catch (e) {
+            // Düz metinse string olarak kalır.
+        }
+
         // Tüm alanların standart olarak hep yollanması (Bubble "Detect Data" Initialize hatasız eşleşsin diye)
         const successPayload = {
             status: "SUCCESS",
-            final_json: finalContent || "",
+            final_json: parsedFinalObject,
             error_message: "",
             auth_url: "",
             app_name: "",
