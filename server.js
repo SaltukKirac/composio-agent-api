@@ -123,6 +123,9 @@ app.post("/run-agent", async (req, res) => {
         let runCount = 0;
         const maxRuns = 15; // Node.JS olduğu için döngü sayısını esnetebiliriz!
 
+        log("--- Ajanın Beynine Giden İlk Prompt ---");
+        log(JSON.stringify(chatParams.messages).substring(0, 400));
+
         while (runCount < maxRuns) {
             runCount++;
             let response;
@@ -222,6 +225,9 @@ app.post("/run-agent", async (req, res) => {
                 let chatMsgContent = response.choices[0].message.content || "";
                 assistantContent = typeof chatMsgContent === 'object' ? JSON.stringify(chatMsgContent) : chatMsgContent;
             }
+            
+            log(`[ROBOTUN BU DÖNGÜDEKİ CEVABI]: ${assistantContent.substring(0, 200)}... (Tool İsteği Var Mı: ${toolCalls.length > 0})`);
+
             
             // Tool çağrısı kurgusu
             if (toolCalls && toolCalls.length > 0) {
