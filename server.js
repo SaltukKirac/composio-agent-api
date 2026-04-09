@@ -204,19 +204,23 @@ app.post("/run-agent", async (req, res) => {
                                 function: { name: funcName, arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments || {}) }
                             });
                         } else if (item.type === "text" || item.type === "output_text" || item.type === "message") {
-                            assistantContent += (item.text || item.output_text || item.content) + "\n";
+                            let textContent = item.text || item.output_text || item.content || "";
+                            assistantContent += (typeof textContent === 'object' ? JSON.stringify(textContent) : String(textContent)) + "\n";
                         }
                     }
                 } 
                 else if (response.choices && response.choices[0] && response.choices[0].message) {
                     toolCalls = response.choices[0].message.tool_calls || [];
-                    assistantContent = response.choices[0].message.content || "";
+                    let chatMsgContent = response.choices[0].message.content || "";
+                    assistantContent = typeof chatMsgContent === 'object' ? JSON.stringify(chatMsgContent) : chatMsgContent;
                 } else {
-                    assistantContent = response.output_text || response.content || "";
+                    let fallBackContent = response.output_text || response.content || "";
+                    assistantContent = typeof fallBackContent === 'object' ? JSON.stringify(fallBackContent) : fallBackContent;
                 }
             } else {
                 toolCalls = response.choices[0].message.tool_calls || [];
-                assistantContent = response.choices[0].message.content || "";
+                let chatMsgContent = response.choices[0].message.content || "";
+                assistantContent = typeof chatMsgContent === 'object' ? JSON.stringify(chatMsgContent) : chatMsgContent;
             }
             
             // Tool çağrısı kurgusu
@@ -227,6 +231,22 @@ app.post("/run-agent", async (req, res) => {
                     log(`>>> LLM Tool Çağırdı: ${toolCall.function.name}`);
                     let res = "";
                     try {
+                        // MİMARİ ÇÖZÜM: LLM'in zorunlu sanıp boş string ("" veya [""]) olarak gönderdiği parametreleri temizleme.
+                        // Bu eklenti sayesinde Composio'nun olmayan dosya eklerini Node.JS fs ile okumaya çalışıp crash olmasını engelliyoruz.
+                        try {
+                            let argsObj = typeof toolCall.function.arguments === 'string' ? JSON.parse(toolCall.function.arguments) : toolCall.function.arguments;
+                            let modified = false;
+                            for (let key in argsObj) {
+                                if (argsObj[key] === "" || (Array.isArray(argsObj[key]) && argsObj[key].length === 1 && argsObj[key][0] === "")) {
+                                    delete argsObj[key];
+                                    modified = true;
+                                }
+                            }
+                            if (modified) {
+                                toolCall.function.arguments = JSON.stringify(argsObj);
+                            }
+                        } catch (e) { /* JSON Parse hatasını yut */ }
+
                         // Composio 0.5.x SDK'sı, çıplak bir Tool nesnesi yerine 
                         // komple bir OpenAI chatCompletion objesi beklemesi hatası ('choices is not iterable') çözümü:
                         const simulatedResponse = {
