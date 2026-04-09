@@ -205,6 +205,13 @@ app.post("/run-agent", async (req, res) => {
                     const payload = { ...chatParams, input: responsesInput };
                     if (mappedTools.length > 0) payload.tools = mappedTools;
                     delete payload.messages; 
+
+                    // OpenAI Responses API Güncellemesi: 'response_format' artik 'text.format' altina tasinmistir!
+                    if (payload.response_format) {
+                        payload.text = payload.text || {};
+                        payload.text.format = payload.response_format;
+                        delete payload.response_format;
+                    }
                     
                     response = await openai.responses.create(payload);
                     usedResponsesAPI = true;
