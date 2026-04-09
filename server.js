@@ -96,6 +96,10 @@ app.post("/run-agent", async (req, res) => {
         let messagesArray = [];
         try {
             messagesArray = typeof properties.user_content === 'string' ? JSON.parse(properties.user_content) : properties.user_content;
+            // Eger JSON icinden gelse bile en basta bir 'system' mesaji yoksa (SADECE input_text arrayi ise), system_message'i ekle gitsin!
+            if (!messagesArray.some(m => m.role === 'system')) {
+                messagesArray.unshift({ role: "system", content: properties.system_message || "" });
+            }
         } catch (e) {
             messagesArray = [
                 { role: "system", content: properties.system_message || "" },
@@ -334,10 +338,11 @@ app.post("/run-agent", async (req, res) => {
             if (typeof tempJSON === 'object' && !Array.isArray(tempJSON)) {
                 let mappedList = [];
                 for (let key in tempJSON) {
-                    let val = typeof tempJSON[key] === 'object' ? JSON.stringify(tempJSON[key]) : tempJSON[key];
-                    // "Key": null gibi boş dönenleri temiz tutup stringe çevir
+                    let val = tempJSON[key];
                     if (val === null || val === undefined) val = ""; 
-                    mappedList.push(`${key}: ${val}`);
+                    // İstenen o "key":"value" (tam stringleşmiş) şeklini kuruyoruz:
+                    let valStr = typeof val === 'object' ? JSON.stringify(val) : JSON.stringify(val);
+                    mappedList.push(`"${key}":${valStr}`);
                 }
                 parsedFinalObject = mappedList; // Native dizi (List of Texts)
             } else if (Array.isArray(tempJSON)) {
