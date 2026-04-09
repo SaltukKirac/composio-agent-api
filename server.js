@@ -283,6 +283,10 @@ app.post("/run-agent", async (req, res) => {
             
             // Tool çağrısı kurgusu
             if (toolCalls && toolCalls.length > 0) {
+                // OpenAI'ın sonsuz döngüye girmemesi için zorunlu tool çağrısını iptal et (artık görevi yaptı)
+                if (chatParams.tool_choice === "required") {
+                    delete chatParams.tool_choice;
+                }
                 chatParams.messages.push({ role: "assistant", content: assistantContent || null, tool_calls: toolCalls });
                 
                 for (const toolCall of toolCalls) {
