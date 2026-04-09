@@ -11,6 +11,11 @@
     "openai": "^4.38.0",
     "composio-core": "latest",
     "@langchain/core": "latest",
+    "langchain": "latest",
+    "@langchain/openai": "latest",
+    "ai": "latest",
+    "@ai-sdk/openai": "latest",
+    "@cloudflare/workers-types": "latest",
     "axios": "^1.6.8"
   }
 }
