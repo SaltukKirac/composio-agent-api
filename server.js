@@ -227,12 +227,33 @@ app.post("/run-agent", async (req, res) => {
                     log(`>>> LLM Tool Çağırdı: ${toolCall.function.name}`);
                     let res = "";
                     try {
+                        // Composio 0.5.x SDK'sı, çıplak bir Tool nesnesi yerine 
+                        // komple bir OpenAI chatCompletion objesi beklemesi hatası ('choices is not iterable') çözümü:
+                        const simulatedResponse = {
+                            choices: [{
+                                message: { role: "assistant", content: null, tool_calls: [toolCall] }
+                            }]
+                        };
+
+                        let callOutput;
                         if (typeof composio.handleToolCall === "function") {
-                            res = await composio.handleToolCall(toolCall, properties.user_id);
+                            callOutput = await composio.handleToolCall(simulatedResponse, properties.user_id);
                         } else if (typeof composio.handle_tool_call === "function") {
-                            res = await composio.handle_tool_call(toolCall, properties.user_id);
-                        } else { res = "Hata: handleToolCall bulunamadi."; }
-                    } catch(err) { res = "Hata oluştu: " + err.message; }
+                            callOutput = await composio.handle_tool_call(simulatedResponse, properties.user_id);
+                        } else { 
+                            throw new Error("handleToolCall bulunamadi."); 
+                        }
+
+                        // Composio geriye genellikle [{role: "tool", content: "..."}] dizisi döner.
+                        if (Array.isArray(callOutput) && callOutput.length > 0) {
+                            res = callOutput[0].content || JSON.stringify(callOutput[0]);
+                        } else {
+                            res = JSON.stringify(callOutput);
+                        }
+
+                    } catch(err) { 
+                        res = "Hata oluştu: " + err.message; 
+                    }
                     
                     const resStr = typeof res === 'object' ? JSON.stringify(res) : String(res);
                     log(`<<< Tool Sonucu: ` + resStr.substring(0, 150));
@@ -260,6 +281,7 @@ app.post("/run-agent", async (req, res) => {
             error_message: "",
             auth_url: "",
             app_name: "",
+            user_id: properties.user_id || "", 
             debug_log: debugLogs.join(' | ')
         };
         
@@ -276,6 +298,7 @@ app.post("/run-agent", async (req, res) => {
                 error_message: err.message || "Unknown error",
                 auth_url: "",
                 app_name: "",
+                user_id: properties.user_id || "", 
                 debug_log: debugLogs.join(' | ')
             };
             await axios.post(properties.bubble_webhook_url, errorPayload).catch(e => console.log("Webhook ulaşılamadı."));
