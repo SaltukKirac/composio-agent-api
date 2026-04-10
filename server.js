@@ -233,9 +233,21 @@ app.post("/run-agent", async (req, res) => {
                     delete payload.messages; 
 
                     // OpenAI Responses API Güncellemesi: 'response_format' artik 'text.format' altina tasinmistir!
+                    // Chat Completions'da json_schema, { type, json_schema: { name, strict, schema } } formatindayken
+                    // Responses API bunu flatten bekler: { type, name, strict, schema }
                     if (payload.response_format) {
                         payload.text = payload.text || {};
-                        payload.text.format = payload.response_format;
+                        const rf = payload.response_format;
+                        if (rf.type === "json_schema" && rf.json_schema) {
+                            payload.text.format = {
+                                type: "json_schema",
+                                name: rf.json_schema.name,
+                                strict: rf.json_schema.strict,
+                                schema: rf.json_schema.schema
+                            };
+                        } else {
+                            payload.text.format = rf;
+                        }
                         delete payload.response_format;
                     }
                     
