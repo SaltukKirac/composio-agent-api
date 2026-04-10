@@ -213,6 +213,10 @@ app.post("/run-agent", async (req, res) => {
                                 call_id: msg.tool_call_id,
                                 output: typeof msg.content === 'object' ? JSON.stringify(msg.content) : String(msg.content)
                             });
+                        } else if (msg.type && msg.type.startsWith("input_")) {
+                            // input_image, input_text, input_file gibi Responses API content item'ları
+                            // doğrudan input dizisine eklenir, JSON.stringify edilmez
+                            responsesInput.push(msg);
                         } else {
                             responsesInput.push({ type: "message", role: "user", content: typeof msg === 'object' ? JSON.stringify(msg) : String(msg) });
                         }
