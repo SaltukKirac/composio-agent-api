@@ -362,16 +362,29 @@ app.post("/run-agent", async (req, res) => {
         let generatedPhotosArray = [];
         
         // --- PHOTO PAYLOAD (AI IMAGE DETECTION) ---
-        // Eğer LLM bir tool kullandıysa ve bu tool (örn. image_generate) resim URL'si döndürdüyse,
-        // URL'yi Base64'e çevirip kullanıcının form elementine uyumlu bir 'photopayload' oluşturuyoruz.
+        // Eğer LLM bir tool kullandıysa ve bu tool (örn. image_generate) resim URL'si VEYA Base64 text döndürdüyse:
         try {
             for (const msg of chatParams.messages) {
                 if (msg.role === "tool" && msg.content) {
+                    
+                    // 1) RAW BASE64 KONTROLÜ (Veri zaten base64 gelmişse)
+                    // Örn: "base64": "iVBO...", veya "data:image/png;base64,iVBOR..."
+                    const base64Match = msg.content.match(/(?:base64["']?\s*:\s*["']|data:image\/[a-zA-Z]+;base64,)([^"'\\]{100,})/i);
+                    if (base64Match && base64Match[1]) {
+                        log(`[AI-IMG] Doğrudan Base64 verisi yakalandı!`);
+                        generatedPhotosArray.push({
+                            customFieldName: "ai_generated_image", 
+                            base64: base64Match[1]
+                        });
+                        continue; // Resmi bulduk, diğer URL taramasına geçmeye gerek yok.
+                    }
+
+                    // 2) URL KONTROLÜ (Eğer base64 yoksa url var mı?)
                     const urlMatch = msg.content.match(/https?:\/\/[^\s"'<>]+/g);
                     if (urlMatch) {
                         for (const url of urlMatch) {
                             if (url.includes("image") || url.includes("dalle") || url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
-                                log(`[AI-IMG] Resim bulundu, indiriliyor: ${url.substring(0, 50)}...`);
+                                log(`[AI-IMG] Resim URL bulundu, indiriliyor: ${url.substring(0, 50)}...`);
                                 try {
                                     const imgRes = await axios.get(url, { responseType: 'arraybuffer' });
                                     const b64 = Buffer.from(imgRes.data, 'binary').toString('base64');
@@ -380,7 +393,7 @@ app.post("/run-agent", async (req, res) => {
                                         base64: b64
                                     });
                                 } catch (e) {
-                                    log(`[AI-IMGHATA] Resim indirilemedi: ${e.message}`);
+                                    log(`[AI-IMGHATA] Resim URL den indirilemedi: ${e.message}`);
                                 }
                             }
                         }
@@ -430,6 +443,7 @@ app.post("/run-agent", async (req, res) => {
             assistant_id: properties.assistant_id || "",
             screen_id: properties.screen_id || "",
             stage_start_time: properties.stage_start_time || "",
+            object_id: properties.object_id || "",
             debug_log: debugLogs.join(' | ')
         };
         
@@ -452,6 +466,7 @@ app.post("/run-agent", async (req, res) => {
                 assistant_id: properties.assistant_id || "",
                 screen_id: properties.screen_id || "",
                 stage_start_time: properties.stage_start_time || "",
+                object_id: properties.object_id || "",
                 debug_log: debugLogs.join(' | ')
             };
             await axios.post(properties.bubble_webhook_url, errorPayload).catch(e => console.log("Webhook ulaşılamadı."));
