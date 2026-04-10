@@ -140,8 +140,11 @@ app.post("/run-agent", async (req, res) => {
             if (!schemaStr.startsWith("{") && !schemaStr.startsWith("[")) {
                 schemaStr = `{\n${schemaStr}\n}`;
             }
+            // Unescaped newline/CR karakterleri JSON.parse'ı kırıyor, temizle
+            schemaStr = schemaStr.replace(/[\r\n]+/g, ' ');
+
             let schemaObj = null;
-            try { schemaObj = JSON.parse(schemaStr); } catch(e) { log("UYARI: json_schema parse edilemedi, json_object moduna düşüldü."); }
+            try { schemaObj = JSON.parse(schemaStr); } catch(e) { log("UYARI: json_schema parse edilemedi, json_object moduna düşüldü. Hata: " + e.message); }
 
             if (schemaObj) {
                 chatParams.response_format = {
@@ -156,7 +159,11 @@ app.post("/run-agent", async (req, res) => {
                     }
                 };
             } else {
+                // Fallback: json_object - Responses API "json" kelimesini mesajda zorunlu kılıyor
                 chatParams.response_format = { type: "json_object" };
+                if (chatParams.messages.length > 0 && chatParams.messages[0].role === "system") {
+                    chatParams.messages[0].content += "\n\nRespond using JSON format only.";
+                }
             }
         }
         
