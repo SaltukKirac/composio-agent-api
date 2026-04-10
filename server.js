@@ -184,8 +184,27 @@ app.post("/run-agent", async (req, res) => {
             
             try {
                 if (openai.responses && typeof openai.responses.create === 'function') {
-                    const responsesInput = [];
+                    // input_image/input_text gibi content part'ları tek bir user message altında grupla
+                    const groupedMessages = [];
+                    let pendingParts = [];
                     for (const msg of chatParams.messages) {
+                        if (!msg) continue;
+                        if (msg.type && msg.type.startsWith("input_")) {
+                            pendingParts.push(msg);
+                        } else {
+                            if (pendingParts.length > 0) {
+                                groupedMessages.push({ role: "user", content: pendingParts });
+                                pendingParts = [];
+                            }
+                            groupedMessages.push(msg);
+                        }
+                    }
+                    if (pendingParts.length > 0) {
+                        groupedMessages.push({ role: "user", content: pendingParts });
+                    }
+
+                    const responsesInput = [];
+                    for (const msg of groupedMessages) {
                         if (!msg) continue;
                         const role = (msg.role || "").toLowerCase();
                         
@@ -213,10 +232,6 @@ app.post("/run-agent", async (req, res) => {
                                 call_id: msg.tool_call_id,
                                 output: typeof msg.content === 'object' ? JSON.stringify(msg.content) : String(msg.content)
                             });
-                        } else if (msg.type && msg.type.startsWith("input_")) {
-                            // input_image, input_text, input_file gibi Responses API content item'ları
-                            // doğrudan input dizisine eklenir, JSON.stringify edilmez
-                            responsesInput.push(msg);
                         } else {
                             responsesInput.push({ type: "message", role: "user", content: typeof msg === 'object' ? JSON.stringify(msg) : String(msg) });
                         }
