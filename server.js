@@ -78,6 +78,7 @@ app.post("/run-agent", async (req, res) => {
                     auth_url: integration.redirectUrl || integration.redirectUri,
                     app_name: appName.toUpperCase(),
                     final_json: "",
+                    action_type: properties.action_type || "",
                     debug_log: debugLogs.join(' | ')
                 });
                 return; // Arka plan işlemini sonlandır
@@ -437,7 +438,8 @@ app.post("/run-agent", async (req, res) => {
             error_message: "",
             auth_url: "",
             app_name: "",
-            user_id: properties.user_id || "", 
+            action_type: properties.action_type || "",
+            user_id: properties.user_id || "",
             assistant_id: properties.assistant_id || "",
             screen_id: properties.screen_id || "",
             stage_start_time: properties.stage_start_time || "",
@@ -460,7 +462,8 @@ app.post("/run-agent", async (req, res) => {
                 error_message: err.message || "Unknown error",
                 auth_url: "",
                 app_name: "",
-                user_id: properties.user_id || "", 
+                action_type: properties.action_type || "",
+                user_id: properties.user_id || "",
                 assistant_id: properties.assistant_id || "",
                 screen_id: properties.screen_id || "",
                 stage_start_time: properties.stage_start_time || "",
