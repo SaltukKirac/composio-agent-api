@@ -134,21 +134,29 @@ app.post("/run-agent", async (req, res) => {
             }
         }
         
-        // JSON Schema Check - Obje Üretip Kodla Diziye Çevirme (En Stabil Yol)
+        // JSON Schema - response_format üzerinden enforce et, system message'a dokunma
         if (properties.json_schema && String(properties.json_schema).trim() !== "") {
-            chatParams.response_format = { type: "json_object" };
-            
             let schemaStr = typeof properties.json_schema === 'string' ? properties.json_schema.trim() : JSON.stringify(properties.json_schema);
             if (!schemaStr.startsWith("{") && !schemaStr.startsWith("[")) {
                 schemaStr = `{\n${schemaStr}\n}`;
             }
+            let schemaObj = null;
+            try { schemaObj = JSON.parse(schemaStr); } catch(e) { log("UYARI: json_schema parse edilemedi, json_object moduna düşüldü."); }
 
-            const schemaInst = "\n\nCRITICAL KURAL: Eğer mesajda veya talimatta bir işlem (örneğin mail at, oluştur vs) isteniyorsa, ÖNCE GEREKLİ MCP ARAÇLARINI (Tools) KULLAN. İşi gerçekte yapıp tamamlamadan sakın cevap verme!\nARAÇLARI KULLANIP İŞİ BİTİRDİKTEN SONRA nihai sonucunu SADECE saf bir DÜZ JSON OBJESİ ({}) formatında ver. Aşağıdaki yapıya birebir uy. Asla array dönme, düz obje dön:\n" + schemaStr;
-            
-            if (chatParams.messages.length > 0 && chatParams.messages[0].role === "system") {
-                chatParams.messages[0].content += schemaInst;
+            if (schemaObj) {
+                chatParams.response_format = {
+                    type: "json_schema",
+                    json_schema: {
+                        name: properties.schema_name || "response",
+                        strict: false,
+                        schema: {
+                            type: "object",
+                            properties: schemaObj
+                        }
+                    }
+                };
             } else {
-                chatParams.messages.unshift({ role: "system", content: schemaInst });
+                chatParams.response_format = { type: "json_object" };
             }
         }
         
