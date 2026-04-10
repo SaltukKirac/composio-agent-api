@@ -358,12 +358,49 @@ app.post("/run-agent", async (req, res) => {
         // -------------------------
         
         let parsedFinalObject = finalContent || "";
+        let predictedActionObj = null;
+        let generatedPhotosArray = [];
+        
+        // --- PHOTO PAYLOAD (AI IMAGE DETECTION) ---
+        // Eğer LLM bir tool kullandıysa ve bu tool (örn. image_generate) resim URL'si döndürdüyse,
+        // URL'yi Base64'e çevirip kullanıcının form elementine uyumlu bir 'photopayload' oluşturuyoruz.
         try {
-            // GPT'den dönen temiz JSON Objesini yakalama ve kullanıcının istediği
-            // ["Key: Value", "Key: Value"] (Bubble List of texts) dizisine kod ile (stabil) çevirme:
+            for (const msg of chatParams.messages) {
+                if (msg.role === "tool" && msg.content) {
+                    const urlMatch = msg.content.match(/https?:\/\/[^\s"'<>]+/g);
+                    if (urlMatch) {
+                        for (const url of urlMatch) {
+                            if (url.includes("image") || url.includes("dalle") || url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
+                                log(`[AI-IMG] Resim bulundu, indiriliyor: ${url.substring(0, 50)}...`);
+                                try {
+                                    const imgRes = await axios.get(url, { responseType: 'arraybuffer' });
+                                    const b64 = Buffer.from(imgRes.data, 'binary').toString('base64');
+                                    generatedPhotosArray.push({
+                                        customFieldName: "ai_generated_image", 
+                                        base64: b64
+                                    });
+                                } catch (e) {
+                                    log(`[AI-IMGHATA] Resim indirilemedi: ${e.message}`);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e) { log("Photo extraction error: " + e); }
+
+        try {
+            // GPT'den dönen temiz JSON Objesini yakalama ve listeye çevirme:
             let tempJSON = JSON.parse(parsedFinalObject);
             
             if (typeof tempJSON === 'object' && !Array.isArray(tempJSON)) {
+                
+                // Müşteri İsteği: predictedAction ögesini JSON listesine katma, ayrı değişkenden dön!
+                if (tempJSON.predictedAction !== undefined) {
+                    predictedActionObj = tempJSON.predictedAction;
+                    delete tempJSON.predictedAction;
+                }
+
                 let mappedList = [];
                 for (let key in tempJSON) {
                     let val = tempJSON[key];
@@ -380,14 +417,19 @@ app.post("/run-agent", async (req, res) => {
             // Düz metinse string olarak kalır.
         }
 
-        // Tüm alanların standart olarak hep yollanması
+        // Tüm alanların standart olarak hep yollanması (Yeni Parametrelerle Birlikte)
         const successPayload = {
             status: "SUCCESS",
             final_json: parsedFinalObject,
+            predicted_action: predictedActionObj ? JSON.stringify(predictedActionObj) : "",
+            photopayload: generatedPhotosArray.length > 0 ? JSON.stringify(generatedPhotosArray) : "",
             error_message: "",
             auth_url: "",
             app_name: "",
             user_id: properties.user_id || "", 
+            assistant_id: properties.assistant_id || "",
+            screen_id: properties.screen_id || "",
+            stage_start_time: properties.stage_start_time || "",
             debug_log: debugLogs.join(' | ')
         };
         
@@ -401,10 +443,15 @@ app.post("/run-agent", async (req, res) => {
             const errorPayload = {
                 status: "ERROR",
                 final_json: "",
+                predicted_action: "",
+                photopayload: "",
                 error_message: err.message || "Unknown error",
                 auth_url: "",
                 app_name: "",
                 user_id: properties.user_id || "", 
+                assistant_id: properties.assistant_id || "",
+                screen_id: properties.screen_id || "",
+                stage_start_time: properties.stage_start_time || "",
                 debug_log: debugLogs.join(' | ')
             };
             await axios.post(properties.bubble_webhook_url, errorPayload).catch(e => console.log("Webhook ulaşılamadı."));
