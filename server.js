@@ -408,14 +408,12 @@ app.post("/run-agent", async (req, res) => {
             
             if (typeof tempJSON === 'object' && !Array.isArray(tempJSON)) {
                 
-                // Müşteri İsteği: predictedAction ögesini JSON listesine katma, ayrı değişkenden dön!
-                if (tempJSON.predictedAction !== undefined) {
-                    predictedActionObj = tempJSON.predictedAction;
-                    delete tempJSON.predictedAction;
-                }
-
                 let mappedList = [];
                 for (let key in tempJSON) {
+                    if (key.trim().toLowerCase() === "predictedaction") {
+                        predictedActionObj = tempJSON[key];
+                        continue;
+                    }
                     let val = tempJSON[key];
                     if (val === null || val === undefined) val = ""; 
                     // İstenen o "key":"value" (tam stringleşmiş) şeklini kuruyoruz:
