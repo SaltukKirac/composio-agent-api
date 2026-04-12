@@ -66,23 +66,37 @@ app.post("/run-agent", async (req, res) => {
             throw new Error("getEntity fonksiyonu bulunamadı. Composio başlatılamadı.");
         }
         
+        // Tüm app'leri kontrol et, eksik olanları topla
+        const missingAuths = [];
         for (const appName of requiredApps) {
             try {
                 await entity.getConnection({ appName: appName });
             } catch (e) {
-                let integration = await entity.initiateConnection({ appName: appName, redirectUri: "https://yourdomain.com/" });
-                
-                // Auth Eksik - Bubble'ın Webhook URL'sine sonucu gönder ve iptal et
-                await axios.post(properties.bubble_webhook_url, {
-                    status: "AUTH_REQUIRED",
-                    auth_url: integration.redirectUrl || integration.redirectUri,
-                    app_name: appName.toUpperCase(),
-                    final_json: "",
-                    action_type: properties.action_type || "",
-                    debug_log: debugLogs.join(' | ')
-                });
-                return; // Arka plan işlemini sonlandır
+                try {
+                    let integration = await entity.initiateConnection({ appName: appName, redirectUri: "https://yourdomain.com/" });
+                    missingAuths.push({
+                        app_name: appName.toUpperCase(),
+                        auth_url: integration.redirectUrl || integration.redirectUri
+                    });
+                } catch (initErr) {
+                    log(`UYARI: ${appName} için bağlantı başlatılamadı: ${initErr.message}`);
+                }
             }
+        }
+
+        // Eksik auth varsa hepsini tek seferde Bubble'a gönder ve dur
+        if (missingAuths.length > 0) {
+            await axios.post(properties.bubble_webhook_url, {
+                status: "AUTH_REQUIRED",
+                // İlk eksik app'i ana alanlara yaz (Bubble tek kayıt işler)
+                auth_url: missingAuths[0].auth_url,
+                app_name: missingAuths[0].app_name,
+                auth_required_list: missingAuths.map(a => a.auth_url),
+                final_json: "",
+                action_type: properties.action_type || "",
+                debug_log: debugLogs.join(' | ')
+            });
+            return;
         }
 
         log("Tüm yetkiler tamam. LLM Döngüsü Başlatılıyor...");
@@ -518,6 +532,130 @@ app.post("/run-agent", async (req, res) => {
             };
             await axios.post(properties.bubble_webhook_url, errorPayload).catch(e => console.log("Webhook ulaşılamadı."));
         }
+    }
+});
+
+// -------------------------
+// /initialize - Auth Kontrolü (Agent çalıştırmadan)
+// -------------------------
+app.post("/initialize", async (req, res) => {
+    const properties = req.body;
+
+    const SECURE_API_KEY = process.env.ADMIN_API_KEY || "gaia_secure_render_key_2026";
+    if (!properties.admin_api_key || properties.admin_api_key !== SECURE_API_KEY) {
+        return res.status(401).json({ status: "UNAUTHORIZED", message: "Geçersiz veya eksik Admin API Key!" });
+    }
+
+    try {
+        let composio;
+        if (typeof composioLib.OpenAIToolSet === "function") {
+            composio = new composioLib.OpenAIToolSet({ apiKey: properties.composio_api_key, entityId: properties.user_id });
+        } else if (typeof composioLib.ComposioToolSet === "function") {
+            composio = new composioLib.ComposioToolSet({ apiKey: properties.composio_api_key, entityId: properties.user_id });
+        } else {
+            composio = new composioLib.Composio({ apiKey: properties.composio_api_key });
+        }
+
+        // Hangi app'lerin gerektiğini tools_list'ten çıkar
+        let requestedToolsList = [];
+        const rawTools = properties.tools_list;
+        if (rawTools && rawTools.length > 5) {
+            try {
+                const parsedArray = typeof rawTools === 'string' ? JSON.parse(rawTools) : rawTools;
+                requestedToolsList = parsedArray.map(t => typeof t === 'object' ? t.type : t);
+            } catch(e) {}
+        }
+        const requiredApps = new Set();
+        requestedToolsList.forEach(tool => {
+            if (tool && tool.includes("mcp_")) requiredApps.add(tool.split("mcp_")[1].toLowerCase());
+        });
+
+        let entity;
+        if (typeof composio.getEntity === "function") {
+            entity = await composio.getEntity(properties.user_id);
+        } else if (composio.client && typeof composio.client.getEntity === "function") {
+            entity = await composio.client.getEntity(properties.user_id);
+        } else {
+            return res.status(500).json({ status: "ERROR", message: "getEntity bulunamadı." });
+        }
+
+        // Tüm app'lerin auth durumunu kontrol et
+        const missingAuths = [];
+        for (const appName of requiredApps) {
+            try {
+                await entity.getConnection({ appName: appName });
+            } catch (e) {
+                try {
+                    let integration = await entity.initiateConnection({ appName: appName, redirectUri: "https://yourdomain.com/" });
+                    missingAuths.push({
+                        app_name: appName.toUpperCase(),
+                        auth_url: integration.redirectUrl || integration.redirectUri
+                    });
+                } catch (initErr) {
+                    missingAuths.push({ app_name: appName.toUpperCase(), auth_url: "" });
+                }
+            }
+        }
+
+        // json_schema'dan tüm key'leri boş değerlerle final_json listesi oluştur
+        let initFinalJson = [];
+        if (properties.json_schema && String(properties.json_schema).trim() !== "") {
+            try {
+                let schemaStr = typeof properties.json_schema === 'string' ? properties.json_schema.trim() : JSON.stringify(properties.json_schema);
+                if (!schemaStr.startsWith("{") && !schemaStr.startsWith("[")) schemaStr = `{\n${schemaStr}\n}`;
+                schemaStr = schemaStr.replace(/[\r\n]+/g, ' ');
+                const schemaObj = JSON.parse(schemaStr);
+                for (const key of Object.keys(schemaObj)) {
+                    initFinalJson.push(`"${key}":""`);
+                }
+            } catch(e) {}
+        }
+
+        // Bubble webhook'una boş ama tam formatlı payload gönder (field type initialization için)
+        if (properties.bubble_webhook_url) {
+            const initPayload = {
+                status: "INIT",
+                final_json: initFinalJson,
+                predicted_action: "",
+                photopayload: "",
+                error_message: "",
+                auth_url: missingAuths.length > 0 ? missingAuths[0].auth_url : "",
+                app_name: missingAuths.length > 0 ? missingAuths[0].app_name : "",
+                auth_required_list: missingAuths.map(a => a.auth_url),
+                action_type: properties.action_type || "",
+                user_id: properties.user_id || "",
+                assistant_id: properties.assistant_id || "",
+                screen_id: properties.screen_id || "",
+                stage_start_time: properties.stage_start_time || "",
+                object_id: properties.object_id || "",
+                debug_log: "INIT"
+            };
+            await axios.post(properties.bubble_webhook_url, initPayload).catch(e => {});
+        }
+
+        if (missingAuths.length > 0) {
+            return res.json({
+                status: "AUTH_REQUIRED",
+                auth_required_list: missingAuths,
+                auth_required_text: missingAuths.map(a => a.auth_url).join("\n"),
+                app_names: missingAuths.map(a => a.app_name).join(", "),
+                first_auth_url: missingAuths[0].auth_url,
+                first_app_name: missingAuths[0].app_name
+            });
+        }
+
+        return res.json({
+            status: "OK",
+            message: "Tüm yetkiler mevcut, agent çalıştırılabilir.",
+            auth_required_list: [],
+            auth_required_text: "",
+            app_names: "",
+            first_auth_url: "",
+            first_app_name: ""
+        });
+
+    } catch (err) {
+        return res.status(500).json({ status: "ERROR", message: err.message });
     }
 });
 
