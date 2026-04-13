@@ -672,7 +672,7 @@ app.post("/manage-triggers", async (req, res) => {
 
     try {
         // Bubble'dan gelecek parametreler
-        const { action_type, trigger_slug, trigger_instance_id, trigger_config, composio_api_key, connected_account_id } = properties;
+        const { action_type, trigger_slug, trigger_instance_id, trigger_config, composio_api_key, connected_account_id, user_id } = properties;
 
         if (!composio_api_key) {
             return res.status(400).json({ status: "ERROR", message: "Composio API Key eksik" });
@@ -704,9 +704,16 @@ app.post("/manage-triggers", async (req, res) => {
                 
             case "list":
                 // Aktif tetikleyicileri listele
-                let listUrl = `${baseURL}/active`;
-                if (connected_account_id) listUrl += `?connected_account_id=${connected_account_id}`;
+                let listUrl = `${baseURL}/active?`;
+                if (connected_account_id) listUrl += `connected_account_id=${connected_account_id}&`;
+                if (user_id) listUrl += `user_id=${user_id}&entity_id=${user_id}`; // Her iki olası ismi de ekliyoruz
+                
                 axiosResponse = await axios.get(listUrl, { headers });
+
+                // GÜVENLİK FİLTRESİ: Gelen listede herkesin trigger'ı varsa, sadece bu user_id'ye ait olanları döndür.
+                if (user_id && axiosResponse.data && Array.isArray(axiosResponse.data.items)) {
+                    axiosResponse.data.items = axiosResponse.data.items.filter(t => t.user_id === user_id || t.entity_id === user_id);
+                }
                 break;
                 
             case "enable":
