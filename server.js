@@ -659,6 +659,93 @@ app.post("/initialize", async (req, res) => {
     }
 });
 
+// -------------------------
+// /manage-triggers - Trigger Yönetimi (UI'dan gelen yapılandırma istekleri için)
+// -------------------------
+app.post("/manage-triggers", async (req, res) => {
+    const properties = req.body;
+
+    const SECURE_API_KEY = process.env.ADMIN_API_KEY || "gaia_secure_render_key_2026";
+    if (!properties.admin_api_key || properties.admin_api_key !== SECURE_API_KEY) {
+        return res.status(401).json({ status: "UNAUTHORIZED", message: "Geçersiz veya eksik Admin API Key!" });
+    }
+
+    try {
+        // Bubble'dan gelecek parametreler
+        const { action_type, trigger_slug, trigger_instance_id, trigger_config, composio_api_key, connected_account_id } = properties;
+
+        if (!composio_api_key) {
+            return res.status(400).json({ status: "ERROR", message: "Composio API Key eksik" });
+        }
+
+        const baseURL = "https://backend.composio.dev/api/v3/trigger_instances";
+        const headers = {
+            "x-api-key": composio_api_key,
+            "Content-Type": "application/json"
+        };
+        
+        let axiosResponse;
+
+        // action_type değerine göre (create, list, enable, disable, delete) Composio API tetiklenir
+        switch (action_type) {
+            case "create":
+            case "upsert":
+                // Yeni bir tetikleyici oluştur
+                let parsedConfig = {};
+                try {
+                    parsedConfig = typeof trigger_config === 'string' ? JSON.parse(trigger_config) : (trigger_config || {});
+                } catch(e) { /* ignore parse error or fallback to string */ }
+                
+                axiosResponse = await axios.post(`${baseURL}/${trigger_slug}/upsert`, {
+                    connected_account_id: connected_account_id,
+                    trigger_config: parsedConfig
+                }, { headers });
+                break;
+                
+            case "list":
+                // Aktif tetikleyicileri listele
+                let listUrl = `${baseURL}/active`;
+                if (connected_account_id) listUrl += `?connected_account_id=${connected_account_id}`;
+                axiosResponse = await axios.get(listUrl, { headers });
+                break;
+                
+            case "enable":
+                // Tetikleyiciyi aktifleştir
+                axiosResponse = await axios.patch(`${baseURL}/manage/${trigger_instance_id}`, { status: "ENABLED" }, { headers });
+                break;
+                
+            case "disable":
+                // Tetikleyiciyi devre dışı bırak
+                axiosResponse = await axios.patch(`${baseURL}/manage/${trigger_instance_id}`, { status: "DISABLED" }, { headers });
+                break;
+                
+            case "delete":
+                // Tetikleyiciyi tamamen sil
+                axiosResponse = await axios.delete(`${baseURL}/manage/${trigger_instance_id}`, { headers });
+                break;
+                
+            default:
+                return res.status(400).json({ status: "ERROR", message: "Geçersiz action_type. Kullanılabilecekler: create, list, enable, disable, delete" });
+        }
+
+        // Başarılı yanıt
+        return res.json({
+            status: "SUCCESS",
+            action: action_type,
+            data: axiosResponse.data
+        });
+
+    } catch (err) {
+        console.error("Trigger Yönetimi Hatası:", err?.response?.data || err.message);
+        const errorMsg = err.response && err.response.data && err.response.data.message ? err.response.data.message : err.message;
+        return res.status(500).json({ 
+            status: "ERROR", 
+            message: errorMsg,
+            details: err.response?.data
+        });
+    }
+});
+
 // Sunucuyu Başlat
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
