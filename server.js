@@ -507,8 +507,9 @@ app.post("/run-agent", async (req, res) => {
             debug_log: debugLogs.join(' | ')
         };
         
-        await axios.post(properties.bubble_webhook_url, successPayload);
-        log("Başarı: Bubble webhook'una data postlandı.");
+        log("Webhook URL: " + properties.bubble_webhook_url);
+        const webhookRes = await axios.post(properties.bubble_webhook_url, successPayload);
+        log("Başarı: Bubble webhook'una data postlandı. HTTP: " + webhookRes.status);
 
     } catch (err) {
         log("HATA: " + err.message);
