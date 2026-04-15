@@ -284,7 +284,23 @@ app.post("/run-agent", async (req, res) => {
     };
 
     try {
-        log("1. Servis Başlatıldı. C-Core yüklendi.");
+        log("════════════════════════════════════");
+        log("▶ AJAN BAŞLATILDI");
+        log(`[TEMP] user_id        : ${properties.user_id}`);
+        log(`[TEMP] assistant_id   : ${properties.assistant_id}`);
+        log(`[TEMP] object_id      : ${properties.object_id}`);
+        log(`[TEMP] model          : ${properties.model}`);
+        log(`[TEMP] action_type    : ${properties.action_type}`);
+        log(`[TEMP] tools_list     : ${properties.tools_list}`);
+        log(`[TEMP] trigger_payload: ${properties.trigger_payload ? "VAR (" + String(properties.trigger_payload).slice(0,80) + "...)" : "YOK"}`);
+        log(`[TEMP] user_content   : ${properties.user_content ? "VAR (" + String(properties.user_content).slice(0,80) + "...)" : "YOK"}`);
+        log(`[TEMP] system_message : ${properties.system_message ? "VAR (" + String(properties.system_message).slice(0,80) + "...)" : "YOK"}`);
+        log(`[TEMP] bubble_api_key : ${properties.bubble_api_key ? "VAR" : "YOK"}`);
+        log(`[TEMP] openai_api_key : ${properties.openai_api_key ? "VAR" : "YOK"}`);
+        log(`[TEMP] composio_key   : ${properties.composio_api_key ? "VAR" : "YOK"}`);
+        log(`[TEMP] webhook_url    : ${properties.bubble_webhook_url}`);
+        log("════════════════════════════════════");
+
         const openai = new OpenAI({ apiKey: properties.openai_api_key });
         
         let composio;
@@ -434,11 +450,14 @@ app.post("/run-agent", async (req, res) => {
             messagesArray.push({ role: "user", content: "Görevi talimatlarına göre gerçekleştir." });
         }
 
+        log(`[TEMP] Mesaj dizisi hazır: ${messagesArray.length} mesaj (${messagesArray.map(m=>m.role).join(', ')})`);
+
         let chatParams = { model: modelName, messages: messagesArray };
         if (properties.effort) chatParams.reasoning_effort = properties.effort;
-        
+
         // Native tool tanımlarını composio tools'a ekle
         tools = [...(tools || []), ...NATIVE_TOOL_DEFINITIONS];
+        log(`[TEMP] Toplam tool sayısı: ${tools.length} (${tools.map(t=>t.function?.name||t.name).join(', ')})`);
 
         // Araçları payload'a ekle!
         if (tools && tools.length > 0) {
@@ -497,15 +516,20 @@ app.post("/run-agent", async (req, res) => {
         let runCount = 0;
         const maxRuns = 15; // Node.JS olduğu için döngü sayısını esnetebiliriz!
 
-        log("--- Ajanın Beynine Giden İlk Prompt ---");
-        log(JSON.stringify(chatParams.messages).substring(0, 400));
+        log("════════════════════════════════════");
+        log("▶ LLM DÖNGÜSÜ BAŞLIYOR");
+        log(`[TEMP] model: ${modelName} | maxRuns: ${maxRuns}`);
+        log(`[TEMP] İlk prompt (ilk 500 char): ${JSON.stringify(chatParams.messages).substring(0, 500)}`);
+        log("════════════════════════════════════");
 
         while (runCount < maxRuns) {
             runCount++;
+            log(`[TEMP] ── Döngü #${runCount} başladı ──`);
             let response;
             let usedResponsesAPI = false;
-            
+
             try {
+                log(`[TEMP] OpenAI API çağrısı yapılıyor... (responses API: ${!!(openai.responses && typeof openai.responses.create === 'function')})`);
                 if (openai.responses && typeof openai.responses.create === 'function') {
                     // input_image/input_text gibi content part'ları tek bir user message altında grupla
                     const groupedMessages = [];
@@ -602,8 +626,10 @@ app.post("/run-agent", async (req, res) => {
                     throw new Error("OpenAI kütüphanesi uyumsuz.");
                 }
             } catch(e) {
+                log(`[TEMP] OpenAI API HATA (#${runCount}): ${e.message}`);
                 throw new Error("API Çağrısı Başarısız: " + e.message);
             }
+            log(`[TEMP] OpenAI yanıtı alındı (#${runCount}), usedResponsesAPI: ${usedResponsesAPI}`);
             
             let toolCalls = [];
             let assistantContent = "";
@@ -648,6 +674,8 @@ app.post("/run-agent", async (req, res) => {
                 assistantContent = typeof chatMsgContent === 'object' ? JSON.stringify(chatMsgContent) : chatMsgContent;
             }
             
+            log(`[TEMP] assistantContent (ilk 200): ${assistantContent.substring(0, 200)}`);
+            log(`[TEMP] toolCalls sayısı: ${toolCalls.length}${toolCalls.length > 0 ? ' → ' + toolCalls.map(t => t.function?.name).join(', ') : ''}`);
             log(`[ROBOTUN BU DÖNGÜDEKİ CEVABI]: ${assistantContent.substring(0, 200)}... (Tool İsteği Var Mı: ${toolCalls.length > 0})`);
 
             
@@ -689,14 +717,17 @@ app.post("/run-agent", async (req, res) => {
 
                         let callOutput;
 
+                        log(`[TEMP] Tool çağrısı: ${toolCall.function.name} | args: ${String(toolCall.function.arguments).slice(0,150)}`);
                         if (isNativeTool(toolCall.function.name)) {
                             // ── NATIVE TOOL ──────────────────────────────────
                             log(`[NATIVE] ${toolCall.function.name} çalıştırılıyor`);
                             let toolArgs = {};
                             try { toolArgs = JSON.parse(toolCall.function.arguments); } catch(e) {}
                             res = await handleNativeTool(toolCall.function.name, toolArgs, properties);
+                            log(`[TEMP] Native tool sonucu: ${String(res).slice(0,150)}`);
                         } else {
                             // ── COMPOSIO TOOL ────────────────────────────────
+                            log(`[TEMP] Composio tool çağrılıyor: ${toolCall.function.name}`);
                             if (typeof composio.handleToolCall === "function") {
                                 callOutput = await composio.handleToolCall(simulatedResponse, properties.user_id);
                             } else if (typeof composio.handle_tool_call === "function") {
@@ -709,12 +740,14 @@ app.post("/run-agent", async (req, res) => {
                             } else {
                                 res = JSON.stringify(callOutput);
                             }
+                            log(`[TEMP] Composio tool sonucu: ${String(res).slice(0,150)}`);
                         }
 
-                    } catch(err) { 
-                        res = "Hata oluştu: " + err.message; 
+                    } catch(err) {
+                        log(`[TEMP] Tool HATA (${toolCall.function.name}): ${err.message}`);
+                        res = "Hata oluştu: " + err.message;
                     }
-                    
+
                     const resStr = typeof res === 'object' ? JSON.stringify(res) : String(res);
                     log(`<<< Tool Sonucu: ` + resStr.substring(0, 150));
                     
@@ -824,9 +857,14 @@ app.post("/run-agent", async (req, res) => {
             debug_log: debugLogs.join(' | ')
         };
         
-        log("Webhook URL: " + properties.bubble_webhook_url);
+        log("════════════════════════════════════");
+        log("▶ BUBBLE WEBHOOK GÖNDERILIYOR");
+        log(`[TEMP] Webhook URL: ${properties.bubble_webhook_url}`);
+        log(`[TEMP] final_json (ilk 200): ${String(successPayload.final_json || "").slice(0,200)}`);
+        log(`[TEMP] status: ${successPayload.status}`);
         const webhookRes = await axios.post(properties.bubble_webhook_url, successPayload);
-        log("Başarı: Bubble webhook'una data postlandı. HTTP: " + webhookRes.status);
+        log(`▶ WEBHOOK TAMAM — HTTP: ${webhookRes.status}`);
+        log("════════════════════════════════════");
 
     } catch (err) {
         log("HATA: " + err.message);
