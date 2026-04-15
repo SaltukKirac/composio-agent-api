@@ -312,62 +312,64 @@ app.post("/run-agent", async (req, res) => {
         });
 
         // -------------------------
-        // BÖLÜM 1: AUTH KONTROLÜ
-        // -------------------------
-        let entity;
-        if (typeof composio.getEntity === "function") {
-            entity = await composio.getEntity(properties.user_id);
-        } else if (composio.client && typeof composio.client.getEntity === "function") {
-            entity = await composio.client.getEntity(properties.user_id);
-        } else {
-            throw new Error("getEntity fonksiyonu bulunamadı. Composio başlatılamadı.");
-        }
-        
-        // Tüm app'leri kontrol et, eksik olanları topla
-        const missingAuths = [];
-        for (const appName of requiredApps) {
-            try {
-                await entity.getConnection({ appName: appName });
-            } catch (e) {
-                try {
-                    let integration = await entity.initiateConnection({ appName: appName, redirectUri: "https://yourdomain.com/" });
-                    missingAuths.push({
-                        app_name: appName.toUpperCase(),
-                        auth_url: integration.redirectUrl || integration.redirectUri
-                    });
-                } catch (initErr) {
-                    log(`UYARI: ${appName} için bağlantı başlatılamadı: ${initErr.message}`);
-                }
-            }
-        }
-
-        // Eksik auth varsa hepsini tek seferde Bubble'a gönder ve dur
-        if (missingAuths.length > 0) {
-            await axios.post(properties.bubble_webhook_url, {
-                status: "AUTH_REQUIRED",
-                // İlk eksik app'i ana alanlara yaz (Bubble tek kayıt işler)
-                auth_url: missingAuths[0].auth_url,
-                app_name: missingAuths[0].app_name,
-                auth_required_list: missingAuths.map(a => a.auth_url),
-                final_json: "",
-                action_type: properties.action_type || "",
-                debug_log: debugLogs.join(' | ')
-            });
-            return;
-        }
-
-        log("Tüm yetkiler tamam. LLM Döngüsü Başlatılıyor...");
-        
-        // -------------------------
-        // BÖLÜM 2: AJAN HAZIRLIK
+        // BÖLÜM 1: AUTH KONTROLÜ (sadece MCP app varsa)
         // -------------------------
         let tools = [];
         if (requiredApps.size > 0) {
+            log(`Composio auth kontrolü: ${Array.from(requiredApps).join(', ')}`);
+            let entity;
+            try {
+                if (typeof composio.getEntity === "function") {
+                    entity = await composio.getEntity(properties.user_id);
+                } else if (composio.client && typeof composio.client.getEntity === "function") {
+                    entity = await composio.client.getEntity(properties.user_id);
+                } else {
+                    throw new Error("getEntity fonksiyonu bulunamadı.");
+                }
+            } catch (entityErr) {
+                log(`HATA: getEntity başarısız: ${entityErr.message}`);
+                throw entityErr;
+            }
+
+            const missingAuths = [];
+            for (const appName of requiredApps) {
+                try {
+                    await entity.getConnection({ appName: appName });
+                } catch (e) {
+                    try {
+                        let integration = await entity.initiateConnection({ appName: appName, redirectUri: "https://yourdomain.com/" });
+                        missingAuths.push({
+                            app_name: appName.toUpperCase(),
+                            auth_url: integration.redirectUrl || integration.redirectUri
+                        });
+                    } catch (initErr) {
+                        log(`UYARI: ${appName} için bağlantı başlatılamadı: ${initErr.message}`);
+                    }
+                }
+            }
+
+            if (missingAuths.length > 0) {
+                await axios.post(properties.bubble_webhook_url, {
+                    status: "AUTH_REQUIRED",
+                    auth_url: missingAuths[0].auth_url,
+                    app_name: missingAuths[0].app_name,
+                    auth_required_list: missingAuths.map(a => a.auth_url),
+                    final_json: "",
+                    action_type: properties.action_type || "",
+                    debug_log: debugLogs.join(' | ')
+                });
+                return;
+            }
+
+            // Composio tool'larını çek
             if (typeof composio.getTools === "function") {
                 tools = await composio.getTools({ apps: Array.from(requiredApps) });
             } else if (typeof composio.get_tools === "function") {
                 tools = await composio.get_tools({ apps: Array.from(requiredApps) });
             }
+            log(`Composio tools yüklendi: ${tools.length} adet`);
+        } else {
+            log("MCP app yok, Composio atlanıyor.");
         }
         
         const modelName = properties.model || "gpt-5.4";
