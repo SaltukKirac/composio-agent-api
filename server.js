@@ -156,19 +156,42 @@ app.post("/run-agent", async (req, res) => {
         
         const modelName = properties.model || "gpt-5.4";
 
-        const modelName = properties.model || "gpt-5.4";
+        // trigger_payload varsa agent'a inject edilecek kullanıcı mesajını hazırla
+        let triggerUserMessage = null;
+        const rawTriggerPayload = properties.trigger_payload;
+        if (rawTriggerPayload && String(rawTriggerPayload).trim() !== "") {
+            let triggerData = rawTriggerPayload;
+            // JSON string ise parse edip pretty-print yapalım
+            try {
+                const parsed = typeof rawTriggerPayload === 'string' ? JSON.parse(rawTriggerPayload) : rawTriggerPayload;
+                triggerData = JSON.stringify(parsed, null, 2);
+            } catch (e) {
+                triggerData = String(rawTriggerPayload);
+            }
+            triggerUserMessage = {
+                role: "user",
+                content: `[TRIGGER EVENT DATA]\nThis automation was started by an external trigger. The following data was received from the trigger event — process it according to your instructions:\n\n${triggerData}`
+            };
+            log("Trigger payload algılandı, agent'a inject ediliyor.");
+        }
+
         let messagesArray = [];
         try {
             messagesArray = typeof properties.user_content === 'string' ? JSON.parse(properties.user_content) : properties.user_content;
-            // Eger JSON icinden gelse bile en basta bir 'system' mesaji yoksa (SADECE input_text arrayi ise), system_message'i ekle gitsin!
+            if (!Array.isArray(messagesArray)) throw new Error("not array");
+            // System mesajı yoksa başa ekle
             if (!messagesArray.some(m => m.role === 'system')) {
                 messagesArray.unshift({ role: "system", content: properties.system_message || "" });
             }
+            // Trigger payload varsa ilk user mesajından önce (system'den hemen sonra) ekle
+            if (triggerUserMessage) {
+                const sysIdx = messagesArray.findIndex(m => m.role === 'system');
+                messagesArray.splice(sysIdx + 1, 0, triggerUserMessage);
+            }
         } catch (e) {
-            messagesArray = [
-                { role: "system", content: properties.system_message || "" },
-                { role: "user", content: properties.user_content || "" }
-            ];
+            messagesArray = [{ role: "system", content: properties.system_message || "" }];
+            if (triggerUserMessage) messagesArray.push(triggerUserMessage);
+            if (properties.user_content) messagesArray.push({ role: "user", content: properties.user_content });
         }
 
         let chatParams = { model: modelName, messages: messagesArray };
