@@ -2,7 +2,223 @@ const express = require("express");
 const { OpenAI } = require("openai");
 const composioLib = require("composio-core");
 const axios = require("axios");
-const { DEFINITIONS: NATIVE_TOOL_DEFINITIONS, handleNativeTool, isNativeTool } = require("./native_tools");
+// ─────────────────────────────────────────────────────────────────────────────
+// GAIA NATIVE TOOLS (inline)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function _getNativeVersionPath(properties) {
+    const v = (properties.app_version || "").trim();
+    return v ? `${v}/` : "";
+}
+
+const NATIVE_TOOL_DEFINITIONS = [
+    {
+        type: "function",
+        function: {
+            name: "GAIA_LIST_FIELDS",
+            description: "Bir tablonun (sheet) tüm custom field'larını listeler. GAIA_CREATE_OBJECT veya GAIA_MODIFY_OBJECT çağrısından önce hangi field'ların mevcut olduğunu öğrenmek için kullan.",
+            parameters: {
+                type: "object",
+                properties: {
+                    organisation_id: { type: "string", description: "Organizasyonun benzersiz ID'si" },
+                    sheet: { type: "string", description: "Field listesi alınacak tablo adı" }
+                },
+                required: ["organisation_id", "sheet"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "GAIA_SEARCH_OBJECT",
+            description: "Gaia'da belirtilen tabloda kayıt arar. Eğer unique_id biliniyorsa sadece onunla sorgula. Metin alanları 'key':'value', sayısal alanlar 'key':value formatında jsonarray constraint kullanır.",
+            parameters: {
+                type: "object",
+                properties: {
+                    organisation_id: { type: "string" },
+                    sheet: { type: "string" },
+                    unique_id: { type: "string", description: "Bubble _id. Biliniyorsa sadece bu yeterli." },
+                    referencevalue: { type: "string" },
+                    search_fields: { type: "object", additionalProperties: true },
+                    cursor: { type: "number" },
+                    limit: { type: "number" }
+                },
+                required: ["organisation_id", "sheet"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "GAIA_CREATE_OBJECT",
+            description: "Gaia'da belirtilen tabloya yeni bir kayıt oluşturur. Önce GAIA_LIST_FIELDS ile field'ları öğren.",
+            parameters: {
+                type: "object",
+                properties: {
+                    organisation_id: { type: "string" },
+                    sheet: { type: "string" },
+                    referencevalue: { type: "string" },
+                    action: { type: "string" },
+                    fields: { type: "object", additionalProperties: true }
+                },
+                required: ["organisation_id", "sheet", "fields"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "GAIA_MODIFY_OBJECT",
+            description: "Gaia'da bir kaydı arar ve günceller. Kayıt bulunamazsa NotAvailable:true ile yeni kayıt oluşturur — asla hata döndürmez.",
+            parameters: {
+                type: "object",
+                properties: {
+                    organisation_id: { type: "string" },
+                    sheet: { type: "string" },
+                    fieldtosearch: { type: "string", enum: ["uniqueid", "reference"] },
+                    search_value: { type: "string" },
+                    action: { type: "string" },
+                    fields: { type: "object", additionalProperties: true }
+                },
+                required: ["organisation_id", "sheet", "fieldtosearch", "search_value", "fields"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "GAIA_UPLOAD_FILE",
+            description: "Gaia'da bir objenin file field'ına dosya yükler. Önce GAIA_LIST_FIELDS ile customfield_id'yi öğren.",
+            parameters: {
+                type: "object",
+                properties: {
+                    organisation_id: { type: "string" },
+                    sheet: { type: "string" },
+                    customfield_id: { type: "string" },
+                    search_type: { type: "string" },
+                    object_search_value: { type: "string" },
+                    filename: { type: "string" },
+                    content: { type: "string" },
+                    private: { type: "boolean" }
+                },
+                required: ["organisation_id", "customfield_id", "search_type", "object_search_value", "filename", "content"]
+            }
+        }
+    }
+];
+
+const _NATIVE_HANDLERS = {
+
+    GAIA_LIST_FIELDS: async (args, properties) => {
+        const token = properties.bubble_api_key || properties.admin_api_key || "";
+        const vp = _getNativeVersionPath(properties);
+        const res = await axios.post(
+            `https://geit-prototip.bubbleapps.io/${vp}api/1.1/wf/customfield`,
+            { organisation_id: args.organisation_id, sheet: args.sheet },
+            { headers: { "Accept": "application/json", "Authorization": `Bearer ${token}` }, timeout: 15000 }
+        );
+        return { success: true, sheet: args.sheet, fields: res.data };
+    },
+
+    GAIA_SEARCH_OBJECT: async (args, properties) => {
+        const token = properties.bubble_api_key || properties.admin_api_key || "";
+        const vp = _getNativeVersionPath(properties);
+        if (args.unique_id) {
+            const res = await axios.get(
+                `https://gaiasphere.io/${vp}api/1.1/obj/Object/${args.unique_id}`,
+                { headers: { "Accept": "application/json", "Authorization": `Bearer ${token}` }, timeout: 15000 }
+            );
+            return { success: true, count: 1, remaining: 0, results: [res.data.response || res.data] };
+        }
+        const constraints = [
+            { key: "organisation_id", constraint_type: "equals", value: args.organisation_id },
+            { key: "sheet", constraint_type: "equals", value: args.sheet }
+        ];
+        if (args.referencevalue) constraints.push({ key: "referedeğer", constraint_type: "equals", value: args.referencevalue });
+        if (args.search_fields) {
+            for (const [key, value] of Object.entries(args.search_fields)) {
+                constraints.push({ key: "jsonarray", constraint_type: "contains", value: typeof value === "number" ? `"${key}":${value}` : `"${key}":"${value}"` });
+            }
+        }
+        const res = await axios.get(
+            `https://gaiasphere.io/${vp}api/1.1/obj/Object`,
+            { params: { constraints: JSON.stringify(constraints), cursor: args.cursor || 0, limit: Math.min(args.limit || 10, 100) }, headers: { "Accept": "application/json", "Authorization": `Bearer ${token}` }, timeout: 15000 }
+        );
+        const data = res.data.response || res.data;
+        return { success: true, count: data.count || 0, remaining: data.remaining || 0, results: data.results || [] };
+    },
+
+    GAIA_CREATE_OBJECT: async (args, properties) => {
+        const token = properties.bubble_api_key || properties.admin_api_key || "";
+        const vp = _getNativeVersionPath(properties);
+        const keyValuePairs = Object.entries(args.fields || {}).map(([key, value]) => ({ key, value }));
+        const res = await axios.post(
+            `https://gaiasphere.io/${vp}api/1.1/wf/apicreateobject`,
+            { sheet: args.sheet, organisation_id: args.organisation_id, action: args.action || "", referencevalue: args.referencevalue || "", keyValuePairs },
+            { headers: { "Accept": "application/json", "Authorization": `Bearer ${token}` }, timeout: 15000 }
+        );
+        return { success: true, result: res.data };
+    },
+
+    GAIA_MODIFY_OBJECT: async (args, properties) => {
+        const token = properties.bubble_api_key || properties.admin_api_key || "";
+        const vp = _getNativeVersionPath(properties);
+        const constraints = [
+            { key: "organisation_id", constraint_type: "equals", value: args.organisation_id },
+            { key: "sheet", constraint_type: "equals", value: args.sheet },
+            args.fieldtosearch === "uniqueid"
+                ? { key: "_id", constraint_type: "equals", value: args.search_value }
+                : { key: "referedeğer", constraint_type: "equals", value: args.search_value }
+        ];
+        let foundId = null;
+        try {
+            const sr = await axios.get(
+                `https://gaiasphere.io/${vp}api/1.1/obj/Object`,
+                { params: { constraints: JSON.stringify(constraints), cursor: 0, limit: 1 }, headers: { "Accept": "application/json", "Authorization": `Bearer ${token}` }, timeout: 15000 }
+            );
+            const d = sr.data.response || sr.data;
+            if ((d.results || []).length > 0) foundId = d.results[0]._id;
+        } catch (e) {}
+        const keyValuePairs = Object.entries(args.fields || {}).map(([key, value]) => ({ key, value }));
+        if (foundId) {
+            const res = await axios.post(
+                `https://gaiasphere.io/${vp}api/1.1/wf/apimodifyobject`,
+                { sheet: args.sheet, organisation_id: args.organisation_id, object_id: foundId, action: args.action || "", keyValuePairs },
+                { headers: { "Accept": "application/json", "Authorization": `Bearer ${token}` }, timeout: 15000 }
+            );
+            return { success: true, operation: "modified", object_id: foundId, result: res.data };
+        } else {
+            const res = await axios.post(
+                `https://gaiasphere.io/${vp}api/1.1/wf/apicreateobject`,
+                { sheet: args.sheet, organisation_id: args.organisation_id, action: args.action || "", referencevalue: args.fieldtosearch === "reference" ? args.search_value : "", keyValuePairs: [...keyValuePairs, { key: "NotAvailable", value: true }] },
+                { headers: { "Accept": "application/json", "Authorization": `Bearer ${token}` }, timeout: 15000 }
+            );
+            return { success: true, operation: "created_not_available", note: "Kayıt bulunamadı, NotAvailable:true ile yeni kayıt oluşturuldu.", result: res.data };
+        }
+    },
+
+    GAIA_UPLOAD_FILE: async (args, properties) => {
+        const token = properties.bubble_api_key || properties.admin_api_key || "";
+        const vp = _getNativeVersionPath(properties);
+        const res = await axios.post(
+            `https://gaiasphere.io/${vp}api/1.1/wf/uploadfile`,
+            { key_file: { filename: args.filename, contents: args.content, private: args.private || false }, customfield_id: args.customfield_id, organisation_id: args.organisation_id, object_search_value: args.object_search_value, search_type: args.search_type },
+            { headers: { "Content-Type": "application/json", "Accept": "application/json", "Authorization": `Bearer ${token}` }, timeout: 30000 }
+        );
+        return { success: true, result: res.data };
+    }
+};
+
+function isNativeTool(toolName) {
+    return Object.prototype.hasOwnProperty.call(_NATIVE_HANDLERS, toolName);
+}
+
+async function handleNativeTool(toolName, args, properties) {
+    const handler = _NATIVE_HANDLERS[toolName];
+    if (!handler) throw new Error(`Native tool bulunamadı: ${toolName}`);
+    const result = await handler(args, properties);
+    return typeof result === "string" ? result : JSON.stringify(result);
+}
 
 // ─── GAIA SYSTEM PROMPT BLOĞU ────────────────────────────────────────────────
 // Her agent çalışmasına otomatik eklenir. Bubble'dan gelen system_message'ın sonuna eklenir.
