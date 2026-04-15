@@ -110,7 +110,7 @@ const NATIVE_TOOL_DEFINITIONS = [
 const _NATIVE_HANDLERS = {
 
     GAIA_LIST_FIELDS: async (args, properties) => {
-        const token = properties.bubble_api_key || properties.admin_api_key || "";
+        const token = properties.bubble_api_key || "";
         const vp = _getNativeVersionPath(properties);
         const res = await axios.post(
             `https://geit-prototip.bubbleapps.io/${vp}api/1.1/wf/customfield`,
@@ -121,7 +121,7 @@ const _NATIVE_HANDLERS = {
     },
 
     GAIA_SEARCH_OBJECT: async (args, properties) => {
-        const token = properties.bubble_api_key || properties.admin_api_key || "";
+        const token = properties.bubble_api_key || "";
         const vp = _getNativeVersionPath(properties);
         if (args.unique_id) {
             const res = await axios.get(
@@ -149,7 +149,7 @@ const _NATIVE_HANDLERS = {
     },
 
     GAIA_CREATE_OBJECT: async (args, properties) => {
-        const token = properties.bubble_api_key || properties.admin_api_key || "";
+        const token = properties.bubble_api_key || "";
         const vp = _getNativeVersionPath(properties);
         const keyValuePairs = Object.entries(args.fields || {}).map(([key, value]) => ({ key, value }));
         const res = await axios.post(
@@ -161,7 +161,7 @@ const _NATIVE_HANDLERS = {
     },
 
     GAIA_MODIFY_OBJECT: async (args, properties) => {
-        const token = properties.bubble_api_key || properties.admin_api_key || "";
+        const token = properties.bubble_api_key || "";
         const vp = _getNativeVersionPath(properties);
         const constraints = [
             { key: "organisation_id", constraint_type: "equals", value: args.organisation_id },
@@ -198,7 +198,7 @@ const _NATIVE_HANDLERS = {
     },
 
     GAIA_UPLOAD_FILE: async (args, properties) => {
-        const token = properties.bubble_api_key || properties.admin_api_key || "";
+        const token = properties.bubble_api_key || "";
         const vp = _getNativeVersionPath(properties);
         const res = await axios.post(
             `https://gaiasphere.io/${vp}api/1.1/wf/uploadfile`,
