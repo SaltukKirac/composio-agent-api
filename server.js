@@ -392,22 +392,33 @@ app.post("/run-agent", async (req, res) => {
         }
 
         let messagesArray = [];
+        const rawUserContent = properties.user_content;
         try {
-            messagesArray = typeof properties.user_content === 'string' ? JSON.parse(properties.user_content) : properties.user_content;
+            if (!rawUserContent || String(rawUserContent).trim() === "") throw new Error("empty");
+            messagesArray = typeof rawUserContent === 'string' ? JSON.parse(rawUserContent) : rawUserContent;
             if (!Array.isArray(messagesArray)) throw new Error("not array");
-            // System mesajı yoksa başa ekle
-            if (!messagesArray.some(m => m.role === 'system')) {
-                messagesArray.unshift({ role: "system", content: properties.system_message || "" });
-            }
-            // Trigger payload varsa ilk user mesajından önce (system'den hemen sonra) ekle
-            if (triggerUserMessage) {
-                const sysIdx = messagesArray.findIndex(m => m.role === 'system');
-                messagesArray.splice(sysIdx + 1, 0, triggerUserMessage);
-            }
         } catch (e) {
-            messagesArray = [{ role: "system", content: properties.system_message || "" }];
-            if (triggerUserMessage) messagesArray.push(triggerUserMessage);
-            if (properties.user_content) messagesArray.push({ role: "user", content: properties.user_content });
+            // user_content boş veya düz string → basit yapı kur
+            messagesArray = [];
+            if (rawUserContent && typeof rawUserContent === 'string' && !rawUserContent.trim().startsWith('[')) {
+                messagesArray.push({ role: "user", content: rawUserContent });
+            }
+        }
+
+        // System mesajı yoksa başa ekle
+        if (!messagesArray.some(m => m.role === 'system')) {
+            messagesArray.unshift({ role: "system", content: properties.system_message || "" });
+        }
+
+        // Trigger payload varsa system'den hemen sonraya ekle
+        if (triggerUserMessage) {
+            const sysIdx = messagesArray.findIndex(m => m.role === 'system');
+            messagesArray.splice(sysIdx + 1, 0, triggerUserMessage);
+        }
+
+        // Hiç user mesajı yoksa (ne user_content ne trigger) boş bir mesaj ekle — OpenAI hata vermesin
+        if (!messagesArray.some(m => m.role === 'user')) {
+            messagesArray.push({ role: "user", content: "Görevi talimatlarına göre gerçekleştir." });
         }
 
         let chatParams = { model: modelName, messages: messagesArray };
