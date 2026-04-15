@@ -596,7 +596,8 @@ app.post("/run-agent", async (req, res) => {
 
                     const payload = { ...chatParams, input: responsesInput };
                     if (mappedTools.length > 0) payload.tools = mappedTools;
-                    delete payload.messages; 
+                    delete payload.messages;
+                    delete payload.reasoning_effort; // Responses API bunu desteklemiyor, reasoning.effort kullanıyor 
 
                     // OpenAI Responses API Güncellemesi: 'response_format' artik 'text.format' altina tasinmistir!
                     // Chat Completions'da json_schema, { type, json_schema: { name, strict, schema } } formatindayken
