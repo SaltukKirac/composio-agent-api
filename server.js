@@ -273,15 +273,8 @@ app.post("/run-agent", async (req, res) => {
         return res.status(401).json({ status: "UNAUTHORIZED", message: "Geçersiz veya eksik Admin API Key!" });
     }
 
-    // Kurallar: Vercel gibi Serverless ortamlar "res.json()" komutu verildiği an işlemi keser.
-    // Bu kod eğer Render, Railway veya kalıcı bir VPS Node.js üzerinde çalıştırılırsa,
-    // res.json() sonrası bile işlem arka planda saatlerce güvenle devam eder.
-    res.json({ status: "PROCESSING", message: "Ajan başlatıldı, arka plan süreci devraldı." });
     let debugLogs = [];
-    const log = (msg) => {
-        debugLogs.push(msg);
-        console.log(msg);
-    };
+    const log = (msg) => { debugLogs.push(msg); console.log(msg); };
 
     try {
         log("════════════════════════════════════");
@@ -374,8 +367,8 @@ app.post("/run-agent", async (req, res) => {
             }
 
             if (missingAuths.length > 0) {
-                log(`[TEMP] Eksik auth var, Bubble'a bildiriliyor: ${missingAuths.map(a => a.app_name).join(', ')}`);
-                await axios.post(properties.bubble_webhook_url, {
+                log(`[TEMP] AUTH_REQUIRED → direkt plugin'e dönülüyor`);
+                return res.json({
                     status: "AUTH_REQUIRED",
                     auth_url: missingAuths[0].auth_url,
                     app_name: missingAuths[0].app_name,
@@ -384,7 +377,6 @@ app.post("/run-agent", async (req, res) => {
                     action_type: properties.action_type || "",
                     debug_log: debugLogs.join(' | ')
                 });
-                return;
             }
 
             log(`[TEMP] Tüm auth tamam, Composio tools çekiliyor...`);
@@ -396,9 +388,13 @@ app.post("/run-agent", async (req, res) => {
             }
             log(`[TEMP] Composio tools yüklendi: ${tools.length} adet`);
         } else {
-            log("MCP app yok, Composio atlanıyor.");
+            log("[TEMP] MCP app yok, Composio atlanıyor.");
         }
-        
+
+        // Auth tamam → PROCESSING döndür, ajan arka planda devam eder
+        res.json({ status: "PROCESSING", message: "Ajan başlatıldı, arka plan süreci devraldı." });
+        log("▶ PROCESSING döndürüldü, LLM döngüsü başlıyor...");
+
         const modelName = properties.model || "gpt-5.4";
 
         // trigger_payload varsa agent'a inject edilecek kullanıcı mesajını hazırla
