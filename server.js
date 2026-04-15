@@ -2,6 +2,47 @@ const express = require("express");
 const { OpenAI } = require("openai");
 const composioLib = require("composio-core");
 const axios = require("axios");
+const { DEFINITIONS: NATIVE_TOOL_DEFINITIONS, handleNativeTool, isNativeTool } = require("./native_tools");
+
+// ─── GAIA SYSTEM PROMPT BLOĞU ────────────────────────────────────────────────
+// Her agent çalışmasına otomatik eklenir. Bubble'dan gelen system_message'ın sonuna eklenir.
+const GAIA_SYSTEM_BLOCK = `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GAIA NATIVE TOOLS — ZORUNLU KULLANIM KURALLARI
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Sana aşağıdaki GAIA native tool'ları verilmiştir. Bu tool'lar, Gaia platformundaki veritabanı işlemlerini (kayıt arama, oluşturma, güncelleme, dosya yükleme) gerçekleştirir.
+
+MEVCUT GAIA NATIVE TOOL'LAR:
+• GAIA_LIST_FIELDS       → Bir tablonun custom field'larını listeler. CREATE/MODIFY/UPLOAD öncesi mutlaka çağır.
+• GAIA_SEARCH_OBJECT     → Tabloda kayıt arar (unique_id, referans veya jsonarray field'larıyla).
+• GAIA_CREATE_OBJECT     → Tabloya yeni kayıt oluşturur.
+• GAIA_MODIFY_OBJECT     → Mevcut kaydı günceller; kayıt yoksa NotAvailable:true ile oluşturur (asla hata vermez).
+• GAIA_UPLOAD_FILE       → Bir objenin belirtilen file field'ına dosya yükler (obje olmadan upload yapılamaz).
+
+⚠️  ÇIKAN OTOMASYONDAKİ ZORUNLU SON ADIM — "GAIA'YA GERİ DÖN" KURALI:
+Her otomasyon akışının MUTLAKA son adımı olarak Gaia'ya veri yazılmalıdır.
+- Dış servislerden (e-posta, takvim, CRM, vs.) veri çeksen bile → sonucu Gaia'ya kaydet.
+- Yeni veri oluştuysa → GAIA_CREATE_OBJECT ile Gaia'ya yaz.
+- Mevcut bir kayıt güncellendiyse → GAIA_MODIFY_OBJECT ile Gaia'ya yaz.
+- Dosya içeren bir adım varsa → önce objeyi bul/oluştur, sonra GAIA_UPLOAD_FILE ile dosyayı o objeye yükle.
+- "Gaia dışı" bir otomasyon olsa dahi → en az bir Gaia kaydı oluşturulmalı veya güncellenmelidir.
+- ASLA "işlem tamamlandı, Gaia'ya yazmaya gerek yok" deme. Her çıktı Gaia'da iz bırakır.
+
+AKIŞ ÖRNEĞİ (dosya içeren otomasyon):
+1. GAIA_LIST_FIELDS → hangi field'ın file tipi olduğunu öğren
+2. GAIA_SEARCH_OBJECT → ilgili obje var mı kontrol et
+3. Yoksa → GAIA_CREATE_OBJECT ile oluştur
+4. Dış servisten dosyayı al / oluştur
+5. GAIA_UPLOAD_FILE → dosyayı objenin file field'ına yükle  ← SON ADIM MUTLAKA BU
+
+AKIŞ ÖRNEĞİ (veri toplayan otomasyon):
+1. Dış servis tool'larıyla veriyi çek (e-posta oku, takvim sorgula, vs.)
+2. GAIA_LIST_FIELDS → hedef tablonun field'larını öğren
+3. GAIA_MODIFY_OBJECT veya GAIA_CREATE_OBJECT → veriyi Gaia'ya yaz  ← SON ADIM MUTLAKA BU
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -114,6 +155,8 @@ app.post("/run-agent", async (req, res) => {
         }
         
         const modelName = properties.model || "gpt-5.4";
+
+        const modelName = properties.model || "gpt-5.4";
         let messagesArray = [];
         try {
             messagesArray = typeof properties.user_content === 'string' ? JSON.parse(properties.user_content) : properties.user_content;
@@ -131,6 +174,9 @@ app.post("/run-agent", async (req, res) => {
         let chatParams = { model: modelName, messages: messagesArray };
         if (properties.effort) chatParams.reasoning_effort = properties.effort;
         
+        // Native tool tanımlarını composio tools'a ekle
+        tools = [...(tools || []), ...NATIVE_TOOL_DEFINITIONS];
+
         // Araçları payload'a ekle!
         if (tools && tools.length > 0) {
             chatParams.tools = tools;
@@ -379,19 +425,27 @@ app.post("/run-agent", async (req, res) => {
                         };
 
                         let callOutput;
-                        if (typeof composio.handleToolCall === "function") {
-                            callOutput = await composio.handleToolCall(simulatedResponse, properties.user_id);
-                        } else if (typeof composio.handle_tool_call === "function") {
-                            callOutput = await composio.handle_tool_call(simulatedResponse, properties.user_id);
-                        } else { 
-                            throw new Error("handleToolCall bulunamadi."); 
-                        }
 
-                        // Composio geriye genellikle [{role: "tool", content: "..."}] dizisi döner.
-                        if (Array.isArray(callOutput) && callOutput.length > 0) {
-                            res = callOutput[0].content || JSON.stringify(callOutput[0]);
+                        if (isNativeTool(toolCall.function.name)) {
+                            // ── NATIVE TOOL ──────────────────────────────────
+                            log(`[NATIVE] ${toolCall.function.name} çalıştırılıyor`);
+                            let toolArgs = {};
+                            try { toolArgs = JSON.parse(toolCall.function.arguments); } catch(e) {}
+                            res = await handleNativeTool(toolCall.function.name, toolArgs, properties);
                         } else {
-                            res = JSON.stringify(callOutput);
+                            // ── COMPOSIO TOOL ────────────────────────────────
+                            if (typeof composio.handleToolCall === "function") {
+                                callOutput = await composio.handleToolCall(simulatedResponse, properties.user_id);
+                            } else if (typeof composio.handle_tool_call === "function") {
+                                callOutput = await composio.handle_tool_call(simulatedResponse, properties.user_id);
+                            } else {
+                                throw new Error("handleToolCall bulunamadi.");
+                            }
+                            if (Array.isArray(callOutput) && callOutput.length > 0) {
+                                res = callOutput[0].content || JSON.stringify(callOutput[0]);
+                            } else {
+                                res = JSON.stringify(callOutput);
+                            }
                         }
 
                     } catch(err) { 
