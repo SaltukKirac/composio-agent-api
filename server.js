@@ -449,7 +449,11 @@ app.post("/run-agent", async (req, res) => {
         log(`[TEMP] Mesaj dizisi hazır: ${messagesArray.length} mesaj (${messagesArray.map(m=>m.role).join(', ')})`);
 
         let chatParams = { model: modelName, messages: messagesArray };
-        if (properties.effort) chatParams.reasoning_effort = properties.effort;
+        // Responses API: reasoning.effort | Chat Completions API: reasoning_effort
+        if (properties.effort) {
+            chatParams.reasoning_effort = properties.effort;   // Chat Completions fallback
+            chatParams.reasoning = { effort: properties.effort }; // Responses API
+        }
 
         // Native tool tanımlarını composio tools'a ekle
         tools = [...(tools || []), ...NATIVE_TOOL_DEFINITIONS];
