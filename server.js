@@ -316,9 +316,13 @@ app.post("/run-agent", async (req, res) => {
         // -------------------------
         let tools = [];
         if (requiredApps.size > 0) {
-            log(`Composio auth kontrolü: ${Array.from(requiredApps).join(', ')}`);
+            log(`[TEMP] Composio auth kontrolü: ${Array.from(requiredApps).join(', ')}`);
+            log(`[TEMP] composio obj keys: ${Object.keys(composio).join(', ')}`);
+            log(`[TEMP] getEntity tipi: ${typeof composio.getEntity} | client var mı: ${!!composio.client}`);
+
             let entity;
             try {
+                log(`[TEMP] getEntity çağrılıyor, user_id: ${properties.user_id}`);
                 if (typeof composio.getEntity === "function") {
                     entity = await composio.getEntity(properties.user_id);
                 } else if (composio.client && typeof composio.client.getEntity === "function") {
@@ -326,29 +330,35 @@ app.post("/run-agent", async (req, res) => {
                 } else {
                     throw new Error("getEntity fonksiyonu bulunamadı.");
                 }
+                log(`[TEMP] getEntity başarılı, entity keys: ${Object.keys(entity || {}).join(', ')}`);
             } catch (entityErr) {
-                log(`HATA: getEntity başarısız: ${entityErr.message}`);
+                log(`[TEMP] HATA: getEntity başarısız: ${entityErr.message}`);
                 throw entityErr;
             }
 
             const missingAuths = [];
             for (const appName of requiredApps) {
                 try {
+                    log(`[TEMP] getConnection çağrılıyor: ${appName}`);
                     await entity.getConnection({ appName: appName });
+                    log(`[TEMP] getConnection başarılı: ${appName} bağlı`);
                 } catch (e) {
+                    log(`[TEMP] getConnection başarısız (${appName}): ${e.message} — initiateConnection deneniyor`);
                     try {
                         let integration = await entity.initiateConnection({ appName: appName, redirectUri: "https://yourdomain.com/" });
+                        log(`[TEMP] initiateConnection başarılı: ${appName}, url: ${integration.redirectUrl || integration.redirectUri}`);
                         missingAuths.push({
                             app_name: appName.toUpperCase(),
                             auth_url: integration.redirectUrl || integration.redirectUri
                         });
                     } catch (initErr) {
-                        log(`UYARI: ${appName} için bağlantı başlatılamadı: ${initErr.message}`);
+                        log(`[TEMP] initiateConnection HATA (${appName}): ${initErr.message}`);
                     }
                 }
             }
 
             if (missingAuths.length > 0) {
+                log(`[TEMP] Eksik auth var, Bubble'a bildiriliyor: ${missingAuths.map(a => a.app_name).join(', ')}`);
                 await axios.post(properties.bubble_webhook_url, {
                     status: "AUTH_REQUIRED",
                     auth_url: missingAuths[0].auth_url,
@@ -361,13 +371,14 @@ app.post("/run-agent", async (req, res) => {
                 return;
             }
 
-            // Composio tool'larını çek
+            log(`[TEMP] Tüm auth tamam, Composio tools çekiliyor...`);
+            log(`[TEMP] getTools tipi: ${typeof composio.getTools} | get_tools tipi: ${typeof composio.get_tools}`);
             if (typeof composio.getTools === "function") {
                 tools = await composio.getTools({ apps: Array.from(requiredApps) });
             } else if (typeof composio.get_tools === "function") {
                 tools = await composio.get_tools({ apps: Array.from(requiredApps) });
             }
-            log(`Composio tools yüklendi: ${tools.length} adet`);
+            log(`[TEMP] Composio tools yüklendi: ${tools.length} adet`);
         } else {
             log("MCP app yok, Composio atlanıyor.");
         }
