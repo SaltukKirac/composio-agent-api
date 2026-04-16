@@ -1021,9 +1021,13 @@ app.post("/initialize", async (req, res) => {
 // -------------------------
 app.post("/manage-triggers", async (req, res) => {
     const properties = req.body;
+    console.log(`\n════════════════════════════════════════════════════════════`);
+    console.log(`[TEMP] ▶ MANAGE-TRIGGERS ENDPOINT ÇAĞRILDI`);
+    console.log(`[TEMP] Gelen request body:`, JSON.stringify(properties).substring(0, 500));
 
     const SECURE_API_KEY = process.env.ADMIN_API_KEY || "gaia_secure_render_key_2026";
     if (!properties.admin_api_key || properties.admin_api_key !== SECURE_API_KEY) {
+        console.log(`[TEMP] ❌ YETKİSİZ İSTEK! admin_api_key eşleşmiyor.`);
         return res.status(401).json({ status: "UNAUTHORIZED", message: "Geçersiz veya eksik Admin API Key!" });
     }
 
@@ -1031,7 +1035,17 @@ app.post("/manage-triggers", async (req, res) => {
         // Bubble'dan gelecek parametreler
         const { action_type, trigger_slug, trigger_instance_id, trigger_config, composio_api_key, connected_account_id, user_id } = properties;
 
+        console.log(`[TEMP] Parametreler:`);
+        console.log(`[TEMP]  - action_type          : ${action_type}`);
+        console.log(`[TEMP]  - trigger_slug         : ${trigger_slug}`);
+        console.log(`[TEMP]  - trigger_instance_id  : ${trigger_instance_id}`);
+        console.log(`[TEMP]  - trigger_config       : ${typeof trigger_config === 'object' ? JSON.stringify(trigger_config) : trigger_config}`);
+        console.log(`[TEMP]  - composio_api_key var?: ${!!composio_api_key}`);
+        console.log(`[TEMP]  - connected_account_id : ${connected_account_id}`);
+        console.log(`[TEMP]  - user_id              : ${user_id}`);
+
         if (!composio_api_key) {
+            console.log(`[TEMP] ❌ Composio API Key eksik! İstek reddedildi.`);
             return res.status(400).json({ status: "ERROR", message: "Composio API Key eksik" });
         }
 
@@ -1048,15 +1062,26 @@ app.post("/manage-triggers", async (req, res) => {
             case "create":
             case "upsert":
                 // Yeni bir tetikleyici oluştur
+                console.log(`[TEMP] ⚡ İşlem Tipi: CREATE/UPSERT`);
                 let parsedConfig = {};
                 try {
                     parsedConfig = typeof trigger_config === 'string' ? JSON.parse(trigger_config) : (trigger_config || {});
-                } catch(e) { /* ignore parse error or fallback to string */ }
+                    console.log(`[TEMP] parsedConfig hazırlandı:`, JSON.stringify(parsedConfig));
+                } catch(e) { 
+                    console.log(`[TEMP] ⚠️ trigger_config parse edilemedi. Düz metin/fall-back kullanılıyor. Mevcut değer:`, trigger_config);
+                }
                 
-                axiosResponse = await axios.post(`${baseURL}/${trigger_slug}/upsert`, {
+                const postUrl = `${baseURL}/${trigger_slug}/upsert`;
+                const postData = {
                     connected_account_id: connected_account_id,
                     trigger_config: parsedConfig
-                }, { headers });
+                };
+                console.log(`[TEMP] 🚀 İstek Atılıyor: POST ${postUrl}`);
+                console.log(`[TEMP] 🚀 İstek Body:`, JSON.stringify(postData));
+
+                axiosResponse = await axios.post(postUrl, postData, { headers });
+                console.log(`[TEMP] ✅ API Yanıtı Alındı! HTTP Status: ${axiosResponse.status}`);
+                console.log(`[TEMP] ✅ API Yanıt Data:`, JSON.stringify(axiosResponse.data));
                 break;
                 
             case "list":
@@ -1075,24 +1100,33 @@ app.post("/manage-triggers", async (req, res) => {
                 
             case "enable":
                 // Tetikleyiciyi aktifleştir
+                console.log(`[TEMP] ⚡ İşlem Tipi: ENABLE (${trigger_instance_id})`);
                 axiosResponse = await axios.patch(`${baseURL}/manage/${trigger_instance_id}`, { status: "ENABLED" }, { headers });
+                console.log(`[TEMP] ✅ ENABLE Yanıtı Alındı! HTTP Status: ${axiosResponse.status}`);
                 break;
                 
             case "disable":
                 // Tetikleyiciyi devre dışı bırak
+                console.log(`[TEMP] ⚡ İşlem Tipi: DISABLE (${trigger_instance_id})`);
                 axiosResponse = await axios.patch(`${baseURL}/manage/${trigger_instance_id}`, { status: "DISABLED" }, { headers });
+                console.log(`[TEMP] ✅ DISABLE Yanıtı Alındı! HTTP Status: ${axiosResponse.status}`);
                 break;
                 
             case "delete":
                 // Tetikleyiciyi tamamen sil
+                console.log(`[TEMP] ⚡ İşlem Tipi: DELETE (${trigger_instance_id})`);
                 axiosResponse = await axios.delete(`${baseURL}/manage/${trigger_instance_id}`, { headers });
+                console.log(`[TEMP] ✅ DELETE Yanıtı Alındı! HTTP Status: ${axiosResponse.status}`);
                 break;
                 
             default:
+                console.log(`[TEMP] ❌ Geçersiz action_type: ${action_type}`);
                 return res.status(400).json({ status: "ERROR", message: "Geçersiz action_type. Kullanılabilecekler: create, list, enable, disable, delete" });
         }
 
         // Başarılı yanıt
+        console.log(`[TEMP] 🎉 İşlem Başarıyla Tamamlandı. Bubble'a SUCCESS dönülüyor.`);
+        console.log(`\n════════════════════════════════════════════════════════════\n`);
         return res.json({
             status: "SUCCESS",
             action: action_type,
@@ -1100,8 +1134,18 @@ app.post("/manage-triggers", async (req, res) => {
         });
 
     } catch (err) {
-        console.error("Trigger Yönetimi Hatası:", err?.response?.data || err.message);
+        console.error(`\n[TEMP] ❌ KRTİTİK HATA YAKALANDI!`);
+        console.error("[TEMP] ❌ Hata Mesajı:", err.message);
         const errorMsg = err.response && err.response.data && err.response.data.message ? err.response.data.message : err.message;
+        
+        if (err.response) {
+            console.error(`[TEMP] ❌ API Status Kodu: ${err.response.status}`);
+            console.error(`[TEMP] ❌ API Yanıtı Data:`, JSON.stringify(err.response.data));
+        } else {
+            console.error(`[TEMP] ❌ Stack Trace:`, err.stack);
+        }
+        console.log(`\n════════════════════════════════════════════════════════════\n`);
+
         return res.status(500).json({ 
             status: "ERROR", 
             message: errorMsg,
