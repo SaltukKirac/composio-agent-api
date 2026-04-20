@@ -1140,12 +1140,23 @@ app.post("/manage-triggers", async (req, res) => {
                     _fileIds.push(_uploaded.id);
                 }
 
-                const _vs = await _openai.beta.vectorStores.create({
-                    name: vector_store_name || 'knowledge_base',
-                    file_ids: _fileIds
+                // SDK versiyonundan bağımsız: direkt HTTP API
+                const _vsResp = await fetch('https://api.openai.com/v1/vector_stores', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${openai_api_key}`,
+                        'Content-Type': 'application/json',
+                        'OpenAI-Beta': 'assistants=v2'
+                    },
+                    body: JSON.stringify({
+                        name: vector_store_name || 'knowledge_base',
+                        file_ids: _fileIds
+                    })
                 });
-                console.log(`[TEMP] ✅ Vector Store oluşturuldu: ${_vs.id}`);
-                axiosResponse = { data: { vector_store_id: _vs.id, file_ids: _fileIds } };
+                const _vsData = await _vsResp.json();
+                if (!_vsResp.ok) throw new Error('Vector store oluşturulamadı: ' + JSON.stringify(_vsData));
+                console.log(`[TEMP] ✅ Vector Store oluşturuldu: ${_vsData.id}`);
+                axiosResponse = { data: { vector_store_id: _vsData.id, file_ids: _fileIds } };
                 break;
             }
 
