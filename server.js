@@ -1033,7 +1033,7 @@ app.post("/manage-triggers", async (req, res) => {
 
     try {
         // Bubble'dan gelecek parametreler
-        const { action_type, trigger_slug, trigger_instance_id, trigger_config, composio_api_key, connected_account_id, user_id } = properties;
+        const { action_type, trigger_slug, trigger_instance_id, trigger_config, composio_api_key, connected_account_id, user_id, files, openai_api_key, vector_store_name } = properties;
 
         console.log(`[TEMP] Parametreler:`);
         console.log(`[TEMP]  - action_type          : ${action_type}`);
@@ -1119,9 +1119,39 @@ app.post("/manage-triggers", async (req, res) => {
                 console.log(`[TEMP] ✅ DELETE Yanıtı Alındı! HTTP Status: ${axiosResponse.status}`);
                 break;
                 
+            case "knowledge_base": {
+                console.log(`[TEMP] ⚡ İşlem Tipi: KNOWLEDGE_BASE`);
+                if (!openai_api_key) throw new Error("openai_api_key eksik");
+                const _openai = new OpenAI({ apiKey: openai_api_key });
+                const _files = Array.isArray(files) ? files : [];
+                if (_files.length === 0) throw new Error("files dizisi boş veya eksik");
+
+                const _fileIds = [];
+                for (const _file of _files) {
+                    console.log(`[TEMP]  → Dosya indiriliyor: ${_file.name} (${_file.url})`);
+                    const _fetchRes = await fetch(_file.url);
+                    if (!_fetchRes.ok) throw new Error(`Dosya indirilemedi: ${_file.url} (${_fetchRes.status})`);
+                    const _buf = Buffer.from(await _fetchRes.arrayBuffer());
+                    const _uploaded = await _openai.files.create({
+                        file: new File([_buf], _file.name || 'document'),
+                        purpose: 'assistants'
+                    });
+                    console.log(`[TEMP]  ✅ Dosya yüklendi: ${_uploaded.id}`);
+                    _fileIds.push(_uploaded.id);
+                }
+
+                const _vs = await _openai.beta.vectorStores.create({
+                    name: vector_store_name || 'knowledge_base',
+                    file_ids: _fileIds
+                });
+                console.log(`[TEMP] ✅ Vector Store oluşturuldu: ${_vs.id}`);
+                axiosResponse = { data: { vector_store_id: _vs.id, file_ids: _fileIds } };
+                break;
+            }
+
             default:
                 console.log(`[TEMP] ❌ Geçersiz action_type: ${action_type}`);
-                return res.status(400).json({ status: "ERROR", message: "Geçersiz action_type. Kullanılabilecekler: create, list, enable, disable, delete" });
+                return res.status(400).json({ status: "ERROR", message: "Geçersiz action_type. Kullanılabilecekler: create, list, enable, disable, delete, knowledge_base" });
         }
 
         // Başarılı yanıt
