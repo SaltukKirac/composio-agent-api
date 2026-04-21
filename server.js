@@ -1041,6 +1041,9 @@ app.post("/manage-triggers", async (req, res) => {
         console.log(`[TEMP]  - trigger_instance_id  : ${trigger_instance_id}`);
         console.log(`[TEMP]  - trigger_config       : ${typeof trigger_config === 'object' ? JSON.stringify(trigger_config) : trigger_config}`);
         console.log(`[TEMP]  - composio_api_key var?: ${!!composio_api_key}`);
+        console.log(`[TEMP]  - openai_api_key var?  : ${!!openai_api_key} | değer: ${openai_api_key ? openai_api_key.substring(0,12)+'...' : 'BOŞ'}`);
+        console.log(`[TEMP]  - files var?           : ${!!files} | sayı: ${Array.isArray(files) ? files.length : 'array değil'}`);
+        console.log(`[TEMP]  - tüm body keys        : ${Object.keys(properties).join(', ')}`);
         console.log(`[TEMP]  - connected_account_id : ${connected_account_id}`);
         console.log(`[TEMP]  - user_id              : ${user_id}`);
 
