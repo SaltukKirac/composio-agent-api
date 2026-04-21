@@ -1033,7 +1033,7 @@ app.post("/manage-triggers", async (req, res) => {
 
     try {
         // Bubble'dan gelecek parametreler
-        const { action_type, trigger_slug, trigger_instance_id, trigger_config, composio_api_key, connected_account_id, user_id, files, openai_api_key, vector_store_name } = properties;
+        const { action_type, trigger_slug, trigger_instance_id, trigger_config, composio_api_key, connected_account_id, user_id, files, openai_api_key, vector_store_name, trigger_instance_ids } = properties;
 
         console.log(`[TEMP] Parametreler:`);
         console.log(`[TEMP]  - action_type          : ${action_type}`);
@@ -1082,6 +1082,16 @@ app.post("/manage-triggers", async (req, res) => {
                 axiosResponse = await axios.post(postUrl, postData, { headers });
                 console.log(`[TEMP] ✅ API Yanıtı Alındı! HTTP Status: ${axiosResponse.status}`);
                 console.log(`[TEMP] ✅ API Yanıt Data:`, JSON.stringify(axiosResponse.data));
+                // Oluşturulan trigger'ı hemen DISABLED yap
+                const _newId = axiosResponse.data?.id || axiosResponse.data?.triggerId || axiosResponse.data?.trigger_instance_id;
+                if (_newId) {
+                    try {
+                        await axios.patch(`${baseURL}/manage/${_newId}`, { status: "DISABLED" }, { headers });
+                        console.log(`[TEMP] ✅ Trigger DISABLED yapıldı: ${_newId}`);
+                    } catch(e) {
+                        console.log(`[TEMP] ⚠️ Trigger disable başarısız (devam ediliyor): ${e.message}`);
+                    }
+                }
                 break;
                 
             case "list":
@@ -1119,6 +1129,22 @@ app.post("/manage-triggers", async (req, res) => {
                 console.log(`[TEMP] ✅ DELETE Yanıtı Alındı! HTTP Status: ${axiosResponse.status}`);
                 break;
                 
+            case "enable_batch": {
+                // Birden fazla trigger'ı paralel olarak ENABLED yap (fire-and-forget için)
+                console.log(`[TEMP] ⚡ İşlem Tipi: ENABLE_BATCH`);
+                const _batchIds = Array.isArray(trigger_instance_ids) ? trigger_instance_ids : [];
+                console.log(`[TEMP]  - enable edilecek ID sayısı: ${_batchIds.length}`);
+                const _batchResults = await Promise.allSettled(
+                    _batchIds.map(id => axios.patch(`${baseURL}/manage/${id}`, { status: "ENABLED" }, { headers }))
+                );
+                _batchResults.forEach((r, i) => {
+                    if (r.status === 'fulfilled') console.log(`[TEMP]  ✅ ENABLED: ${_batchIds[i]}`);
+                    else console.log(`[TEMP]  ⚠️ Başarısız: ${_batchIds[i]} — ${r.reason?.message}`);
+                });
+                axiosResponse = { data: { enabled: _batchIds.filter((_, i) => _batchResults[i].status === 'fulfilled') } };
+                break;
+            }
+
             case "knowledge_base": {
                 console.log(`[TEMP] ⚡ İşlem Tipi: KNOWLEDGE_BASE`);
                 if (!openai_api_key) throw new Error("openai_api_key eksik");
@@ -1126,9 +1152,9 @@ app.post("/manage-triggers", async (req, res) => {
                 const _files = Array.isArray(files) ? files : [];
                 if (_files.length === 0) throw new Error("files dizisi boş veya eksik");
 
-                const _fileIds = [];
-                for (const _file of _files) {
-                    console.log(`[TEMP]  → Dosya indiriliyor: ${_file.name} (${_file.url})`);
+                // Dosyaları paralel indir + yükle
+                const _fileIds = await Promise.all(_files.map(async (_file) => {
+                    console.log(`[TEMP]  → Dosya indiriliyor: ${_file.name}`);
                     const _fetchRes = await fetch(_file.url);
                     if (!_fetchRes.ok) throw new Error(`Dosya indirilemedi: ${_file.url} (${_fetchRes.status})`);
                     const _buf = Buffer.from(await _fetchRes.arrayBuffer());
@@ -1137,8 +1163,8 @@ app.post("/manage-triggers", async (req, res) => {
                         purpose: 'assistants'
                     });
                     console.log(`[TEMP]  ✅ Dosya yüklendi: ${_uploaded.id}`);
-                    _fileIds.push(_uploaded.id);
-                }
+                    return _uploaded.id;
+                }));
 
                 // SDK versiyonundan bağımsız: direkt HTTP API
                 const _vsResp = await fetch('https://api.openai.com/v1/vector_stores', {
