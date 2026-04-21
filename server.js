@@ -1150,8 +1150,10 @@ app.post("/manage-triggers", async (req, res) => {
 
             case "knowledge_base": {
                 console.log(`[TEMP] ⚡ İşlem Tipi: KNOWLEDGE_BASE`);
-                if (!openai_api_key) throw new Error("openai_api_key eksik");
-                const _openai = new OpenAI({ apiKey: openai_api_key });
+                // Önce istekten al, yoksa Render env var'ından kullan
+                const _oaiKey = openai_api_key || process.env.OPENAI_API_KEY || '';
+                if (!_oaiKey) throw new Error("openai_api_key eksik (ne istekten ne env'den geldi)");
+                const _openai = new OpenAI({ apiKey: _oaiKey });
                 const _files = Array.isArray(files) ? files : [];
                 if (_files.length === 0) throw new Error("files dizisi boş veya eksik");
 
@@ -1173,7 +1175,7 @@ app.post("/manage-triggers", async (req, res) => {
                 const _vsResp = await fetch('https://api.openai.com/v1/vector_stores', {
                     method: 'POST',
                     headers: {
-                        'Authorization': `Bearer ${openai_api_key}`,
+                        'Authorization': `Bearer ${_oaiKey}`,
                         'Content-Type': 'application/json',
                         'OpenAI-Beta': 'assistants=v2'
                     },
@@ -1189,9 +1191,100 @@ app.post("/manage-triggers", async (req, res) => {
                 break;
             }
 
+            case "kb_list_files": {
+                console.log(`[TEMP] ⚡ İşlem Tipi: KB_LIST_FILES`);
+                const _oaiKey2 = openai_api_key || process.env.OPENAI_API_KEY || '';
+                if (!_oaiKey2) throw new Error("openai_api_key eksik");
+                const { vector_store_id: _vsId } = properties;
+                if (!_vsId) throw new Error("vector_store_id eksik");
+                const _oaiHdr = { 'Authorization': `Bearer ${_oaiKey2}`, 'Content-Type': 'application/json', 'OpenAI-Beta': 'assistants=v2' };
+
+                // Vector store'daki dosyaları listele
+                const _vsFilesResp = await fetch(`https://api.openai.com/v1/vector_stores/${_vsId}/files?limit=100`, { headers: _oaiHdr });
+                const _vsFilesData = await _vsFilesResp.json();
+                if (!_vsFilesResp.ok) throw new Error('VS dosyaları listelenemedi: ' + JSON.stringify(_vsFilesData));
+
+                // Her dosyanın adını paralel olarak çek
+                const _fileList = await Promise.all((_vsFilesData.data || []).map(async (vsFile) => {
+                    try {
+                        const _fResp = await fetch(`https://api.openai.com/v1/files/${vsFile.id}`, { headers: _oaiHdr });
+                        const _fData = await _fResp.json();
+                        return { file_id: vsFile.id, name: _fData.filename || vsFile.id, status: vsFile.status };
+                    } catch(e) {
+                        return { file_id: vsFile.id, name: vsFile.id, status: vsFile.status };
+                    }
+                }));
+                console.log(`[TEMP] ✅ KB dosyaları listelendi: ${_fileList.length} adet`);
+                axiosResponse = { data: { files: _fileList, vector_store_id: _vsId } };
+                break;
+            }
+
+            case "kb_add_files": {
+                console.log(`[TEMP] ⚡ İşlem Tipi: KB_ADD_FILES`);
+                const _oaiKey3 = openai_api_key || process.env.OPENAI_API_KEY || '';
+                if (!_oaiKey3) throw new Error("openai_api_key eksik");
+                const _addFiles = Array.isArray(files) ? files : [];
+                if (_addFiles.length === 0) throw new Error("files dizisi boş");
+                const _vsTarget = properties.vector_store_id || '';
+                const _oaiHdr3 = { 'Authorization': `Bearer ${_oaiKey3}`, 'Content-Type': 'application/json', 'OpenAI-Beta': 'assistants=v2' };
+                const _openai3 = new OpenAI({ apiKey: _oaiKey3 });
+
+                // Dosyaları paralel indir + yükle
+                const _newFileIds = await Promise.all(_addFiles.map(async (_file) => {
+                    console.log(`[TEMP]  → Dosya yükleniyor: ${_file.name}`);
+                    const _fetchRes = await fetch(_file.url);
+                    if (!_fetchRes.ok) throw new Error(`Dosya indirilemedi: ${_file.url}`);
+                    const _buf = Buffer.from(await _fetchRes.arrayBuffer());
+                    const _up = await _openai3.files.create({ file: new File([_buf], _file.name || 'document'), purpose: 'assistants' });
+                    return { file_id: _up.id, name: _file.name };
+                }));
+
+                let _finalVsId = _vsTarget;
+                if (_vsTarget) {
+                    // Mevcut VS'e toplu ekle
+                    const _batchResp = await fetch(`https://api.openai.com/v1/vector_stores/${_vsTarget}/file_batches`, {
+                        method: 'POST', headers: _oaiHdr3,
+                        body: JSON.stringify({ file_ids: _newFileIds.map(f => f.file_id) })
+                    });
+                    const _batchData = await _batchResp.json();
+                    if (!_batchResp.ok) throw new Error('Dosyalar VS\'e eklenemedi: ' + JSON.stringify(_batchData));
+                } else {
+                    // Yeni VS oluştur
+                    const _vsResp3 = await fetch('https://api.openai.com/v1/vector_stores', {
+                        method: 'POST', headers: _oaiHdr3,
+                        body: JSON.stringify({ name: vector_store_name || 'knowledge_base', file_ids: _newFileIds.map(f => f.file_id) })
+                    });
+                    const _vsData3 = await _vsResp3.json();
+                    if (!_vsResp3.ok) throw new Error('VS oluşturulamadı: ' + JSON.stringify(_vsData3));
+                    _finalVsId = _vsData3.id;
+                }
+                console.log(`[TEMP] ✅ KB_ADD_FILES tamamlandı. VS: ${_finalVsId}, yeni dosya: ${_newFileIds.length}`);
+                axiosResponse = { data: { vector_store_id: _finalVsId, added_files: _newFileIds } };
+                break;
+            }
+
+            case "kb_remove_file": {
+                console.log(`[TEMP] ⚡ İşlem Tipi: KB_REMOVE_FILE`);
+                const _oaiKey4 = openai_api_key || process.env.OPENAI_API_KEY || '';
+                if (!_oaiKey4) throw new Error("openai_api_key eksik");
+                const _rmVsId  = properties.vector_store_id || '';
+                const _rmFileId = properties.file_id || '';
+                if (!_rmVsId || !_rmFileId) throw new Error("vector_store_id ve file_id zorunlu");
+                const _oaiHdr4 = { 'Authorization': `Bearer ${_oaiKey4}`, 'Content-Type': 'application/json', 'OpenAI-Beta': 'assistants=v2' };
+
+                const _rmResp = await fetch(`https://api.openai.com/v1/vector_stores/${_rmVsId}/files/${_rmFileId}`, {
+                    method: 'DELETE', headers: _oaiHdr4
+                });
+                const _rmData = await _rmResp.json();
+                if (!_rmResp.ok) throw new Error('Dosya silinemedi: ' + JSON.stringify(_rmData));
+                console.log(`[TEMP] ✅ Dosya VS'den silindi: ${_rmFileId}`);
+                axiosResponse = { data: { deleted: true, file_id: _rmFileId, vector_store_id: _rmVsId } };
+                break;
+            }
+
             default:
                 console.log(`[TEMP] ❌ Geçersiz action_type: ${action_type}`);
-                return res.status(400).json({ status: "ERROR", message: "Geçersiz action_type. Kullanılabilecekler: create, list, enable, disable, delete, knowledge_base" });
+                return res.status(400).json({ status: "ERROR", message: "Geçersiz action_type." });
         }
 
         // Başarılı yanıt
