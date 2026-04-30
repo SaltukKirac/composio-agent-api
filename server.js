@@ -84,27 +84,9 @@ const NATIVE_TOOL_DEFINITIONS = [
             }
         }
     },
-    {
-        type: "function",
-        function: {
-            name: "GAIA_UPLOAD_FILE",
-            description: "Gaia'da bir objenin file field'ına dosya yükler. Önce GAIA_LIST_FIELDS ile customfield_id'yi öğren.",
-            parameters: {
-                type: "object",
-                properties: {
-                    organisation_id: { type: "string" },
-                    sheet: { type: "string" },
-                    customfield_id: { type: "string" },
-                    search_type: { type: "string" },
-                    object_search_value: { type: "string" },
-                    filename: { type: "string" },
-                    content: { type: "string" },
-                    private: { type: "boolean" }
-                },
-                required: ["organisation_id", "customfield_id", "search_type", "object_search_value", "filename", "content"]
-            }
-        }
-    }
+    // GAIA_UPLOAD_FILE kaldırıldı — Gaia görev bazlı sistemde file çıktısı olan her görevin
+    // o file tipi custom field'ı zaten tanımlıdır. File/image çıktısı photopayload (filepayload)
+    // mekanizmasıyla form elementine gelir, form onu ilgili field'a uygular. Ayrı upload tool'una gerek yok.
 ];
 
 const _NATIVE_HANDLERS = {
@@ -197,16 +179,7 @@ const _NATIVE_HANDLERS = {
         }
     },
 
-    GAIA_UPLOAD_FILE: async (args, properties) => {
-        const token = properties.bubble_api_key || "";
-        const vp = _getNativeVersionPath(properties);
-        const res = await axios.post(
-            `https://gaiasphere.io/${vp}api/1.1/wf/uploadfile`,
-            { key_file: { filename: args.filename, contents: args.content, private: args.private || false }, customfield_id: args.customfield_id, organisation_id: args.organisation_id, object_search_value: args.object_search_value, search_type: args.search_type },
-            { headers: { "Content-Type": "application/json", "Accept": "application/json", "Authorization": `Bearer ${token}` }, timeout: 30000 }
-        );
-        return { success: true, result: res.data };
-    }
+    // GAIA_UPLOAD_FILE handler kaldırıldı — bkz. NATIVE_TOOL_DEFINITIONS açıklaması
 };
 
 function isNativeTool(toolName) {
@@ -231,32 +204,56 @@ GAIA NATIVE TOOLS — ZORUNLU KULLANIM KURALLARI
 Sana aşağıdaki GAIA native tool'ları verilmiştir. Bu tool'lar, Gaia platformundaki veritabanı işlemlerini (kayıt arama, oluşturma, güncelleme, dosya yükleme) gerçekleştirir.
 
 MEVCUT GAIA NATIVE TOOL'LAR:
-• GAIA_LIST_FIELDS       → Bir tablonun custom field'larını listeler. CREATE/MODIFY/UPLOAD öncesi mutlaka çağır.
+• GAIA_LIST_FIELDS       → Bir tablonun custom field'larını listeler. CREATE/MODIFY öncesi mutlaka çağır.
 • GAIA_SEARCH_OBJECT     → Tabloda kayıt arar (unique_id, referans veya jsonarray field'larıyla).
 • GAIA_CREATE_OBJECT     → Tabloya yeni kayıt oluşturur.
 • GAIA_MODIFY_OBJECT     → Mevcut kaydı günceller; kayıt yoksa NotAvailable:true ile oluşturur (asla hata vermez).
-• GAIA_UPLOAD_FILE       → Bir objenin belirtilen file field'ına dosya yükler (obje olmadan upload yapılamaz).
+
+⚠️  DOSYA / GÖRSEL ÇIKTISI HAKKINDA:
+Görev bir dosya veya görsel üretiyorsa (PDF, image, vb.), bu çıktıyı JSON field'ı olarak döndür.
+File/image içerikli field'lar sistem tarafından otomatik yüklenir — ayrıca upload tool çağrısı yapma.
 
 ⚠️  ÇIKAN OTOMASYONDAKİ ZORUNLU SON ADIM — "GAIA'YA GERİ DÖN" KURALI:
 Her otomasyon akışının MUTLAKA son adımı olarak Gaia'ya veri yazılmalıdır.
 - Dış servislerden (e-posta, takvim, CRM, vs.) veri çeksen bile → sonucu Gaia'ya kaydet.
 - Yeni veri oluştuysa → GAIA_CREATE_OBJECT ile Gaia'ya yaz.
 - Mevcut bir kayıt güncellendiyse → GAIA_MODIFY_OBJECT ile Gaia'ya yaz.
-- Dosya içeren bir adım varsa → önce objeyi bul/oluştur, sonra GAIA_UPLOAD_FILE ile dosyayı o objeye yükle.
 - "Gaia dışı" bir otomasyon olsa dahi → en az bir Gaia kaydı oluşturulmalı veya güncellenmelidir.
 - ASLA "işlem tamamlandı, Gaia'ya yazmaya gerek yok" deme. Her çıktı Gaia'da iz bırakır.
-
-AKIŞ ÖRNEĞİ (dosya içeren otomasyon):
-1. GAIA_LIST_FIELDS → hangi field'ın file tipi olduğunu öğren
-2. GAIA_SEARCH_OBJECT → ilgili obje var mı kontrol et
-3. Yoksa → GAIA_CREATE_OBJECT ile oluştur
-4. Dış servisten dosyayı al / oluştur
-5. GAIA_UPLOAD_FILE → dosyayı objenin file field'ına yükle  ← SON ADIM MUTLAKA BU
 
 AKIŞ ÖRNEĞİ (veri toplayan otomasyon):
 1. Dış servis tool'larıyla veriyi çek (e-posta oku, takvim sorgula, vs.)
 2. GAIA_LIST_FIELDS → hedef tablonun field'larını öğren
 3. GAIA_MODIFY_OBJECT veya GAIA_CREATE_OBJECT → veriyi Gaia'ya yaz  ← SON ADIM MUTLAKA BU
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ÇIKTI FORMATI — ZORUNLU İKİ EK ALAN
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Her çalışmanın sonunda, JSON çıktına veya son mesajına MUTLAKA şu iki alanı ekle:
+
+"configuration_notes_to_myself": "<SADECE gelecekte kullanacağın ID'ler, URL'ler, resource adları — key=value formatında, kısa ve öz. Örnek: template_doc_id=1GYz..., spreadsheet_id=1Bxi...>"
+
+⚠️ DAVRANIŞ KURALI:
+• Bu alanı BOŞ bırakırsan mevcut not KORUNUR — değişmez. Bunu kasıtlı kullan: sadece yeni bir değer sakladığında dolu gönder.
+• Dolu gönderirsen eski notun ÜZERİNE YAZILIR. Mevcut notu silmek istemiyorsan eski değerleri de dahil et.
+• Sadece ileride referans vereceğin değerleri yaz — ne yaptığının açıklamasını değil.
+
+"notes_to_user": "<Kullanıcıya yönelik özet: ne yaptın, ne konfigüre ettin, kullanıcının bilmesi gereken bir şey var mı, bir sonraki adım ne olmalı?>"
+
+⚠️ KISMI SORUMLULUK — OTOMASYONu SADECE TAMAMLAMAK DEĞİL, KONFİGÜRE ETMEK DE OLABILIR:
+Sana bir otomasyon kurma veya düzenleme görevi verilebilir. Bu durumda görevin:
+1. Kullanıcının isteğini anlamak
+2. Gerekli ön konfigürasyonları yapmak (örn. WhatsApp şablonu oluştur, webhook kur, API bağlantısı test et)
+3. Elde ettiğin ID/URL değerlerini configuration_notes_to_myself'e yaz (key=value, sadece ileride kullanacakların)
+4. Kullanıcıya ne yaptığını notes_to_user'da açıkla
+
+ÖRNEK SENARYO — WhatsApp şablon gerektiren otomasyon:
+• Kullanıcı: "Yeni müşteri kayıt olunca WhatsApp mesajı at"
+• Sen: Composio üzerinden WhatsApp şablonu oluştur → template_id = "waba_12345" al
+• configuration_notes_to_myself: "template_id=waba_12345"   ← sadece ID, açıklama yok
+• Otomasyon tetiklendiğinde bu not sana iletilir → template_id'yi bilirsin, tekrar oluşturmazsın.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`;
 
@@ -305,20 +302,62 @@ app.post("/run-agent", async (req, res) => {
             composio = new composioLib.Composio({ apiKey: properties.composio_api_key });
         }
 
+        // ── OpenAI Native Tool tanımları (Responses API built-in) ───────────────
+        // Chat Completions API bu tool'ları desteklemez — sadece Responses API'de çalışır.
+        const OPENAI_NATIVE_TOOL_IDS = new Set(['code_interpreter','web_search','web_search_preview','image_generation','file_search']);
+        const OPENAI_NATIVE_TOOL_MAP = {
+            code_interpreter:  { type: 'code_interpreter' },
+            web_search:        { type: 'web_search_preview' },
+            web_search_preview:{ type: 'web_search_preview' },
+            image_generation:  { type: 'image_generation' },
+            file_search:       { type: 'file_search', vector_store_ids: properties.vector_store_ids ? (Array.isArray(properties.vector_store_ids) ? properties.vector_store_ids : [properties.vector_store_ids]) : [] }
+        };
+
         // Tools Listesini Çözümle
-        let requestedToolsList = [];
-        const rawTools = properties.tools_list; 
+        // Format A (eski): ["mcp_gmail", "mcp_elevenlabs"]
+        // Format B (yeni): [{"type":"GMAIL_CREATE_EMAIL_DRAFT","app":"gmail","display_name":"..."}]
+        // Format C (native): [{"type":"code_interpreter"}, {"type":"web_search"}, {"type":"image_generation"}]
+        const requiredApps     = new Set();  // Composio app slugs
+        const requestedActions = [];         // Composio action slugs
+        const nativeToolDefs   = [];         // OpenAI native tool definitions
+
+        const rawTools = properties.tools_list;
         if (rawTools && rawTools.length > 5) {
             try {
                 const parsedArray = typeof rawTools === 'string' ? JSON.parse(rawTools) : rawTools;
-                requestedToolsList = parsedArray.map(t => typeof t === 'object' ? t.type : t);
-            } catch(e) { log("UYARI: tools_list hatali."); }
-        }
+                parsedArray.forEach(t => {
+                    const typeStr = (typeof t === 'object' ? t.type : t) || '';
+                    const typeLow = typeStr.toLowerCase();
 
-        const requiredApps = new Set();
-        requestedToolsList.forEach(tool => {
-            if(tool && tool.includes("mcp_")) requiredApps.add(tool.split("mcp_")[1].toLowerCase());
-        });
+                    // Format C: OpenAI native tool
+                    if (OPENAI_NATIVE_TOOL_IDS.has(typeLow)) {
+                        const def = OPENAI_NATIVE_TOOL_MAP[typeLow];
+                        if (def && !nativeToolDefs.find(d => d.type === def.type)) nativeToolDefs.push(def);
+                        return;
+                    }
+
+                    if (typeof t === 'object' && t !== null) {
+                        // Format B: Composio action
+                        if (t.app) requiredApps.add(t.app.toLowerCase());
+                        if (typeStr && !typeLow.startsWith('mcp_')) requestedActions.push(typeStr);
+                        else if (typeLow.startsWith('mcp_')) requiredApps.add(typeLow.split("mcp_")[1]);
+                    } else if (typeof t === 'string') {
+                        // Format A
+                        if (t.includes("mcp_")) requiredApps.add(t.split("mcp_")[1].toLowerCase());
+                        else if (t.length > 2) requestedActions.push(t);
+                    }
+                });
+            } catch(e) { log("UYARI: tools_list parse hatali: " + e.message); }
+        }
+        log(`[TEMP] requiredApps: ${[...requiredApps].join(', ')} | requestedActions: ${requestedActions.slice(0,5).join(', ')}${requestedActions.length > 5 ? '...' : ''} | nativeTools: ${nativeToolDefs.map(d=>d.type).join(', ')}`);
+
+        // ── FILE FIELDS — json_schema'dan otomatik tespit ──────────────────────────────
+        // Kullanıcı json_schema'da dosya çıktısı olan field'ları "type": "file" olarak işaretler.
+        // Örn: {"fatura_pdf": {"type": "file"}, "ozet": {"type": "string"}}
+        // Burası: (1) bu field'ları fileFieldsSet'e ekler, (2) schema'dan temizler (OpenAI'ya gitmesin).
+        // Tespit schema parsing'den SONRA yapılacak — şimdi sadece Set'i oluştur.
+        // NOT: sadece image/pdf değil, tüm dosya türleri için geçerlidir.
+        const fileFieldsSet = new Set(); // json_schema parsing'de doldurulacak (aşağıda)
 
         // -------------------------
         // BÖLÜM 1: AUTH KONTROLÜ (sadece MCP app varsa)
@@ -382,11 +421,22 @@ app.post("/run-agent", async (req, res) => {
             log(`[TEMP] Tüm auth tamam, Composio tools çekiliyor...`);
             log(`[TEMP] getTools tipi: ${typeof composio.getTools} | get_tools tipi: ${typeof composio.get_tools}`);
             if (typeof composio.getTools === "function") {
-                tools = await composio.getTools({ apps: Array.from(requiredApps) });
+                if (requestedActions.length > 0) {
+                    // Spesifik action sluglar varsa onları yükle (daha verimli — sadece seçilen tools)
+                    tools = await composio.getTools({ actions: requestedActions });
+                    log(`[TEMP] Composio tools (actions) yüklendi: ${tools.length} adet`);
+                }
+                if (tools.length === 0 && requiredApps.size > 0) {
+                    // Fallback: tüm app araçlarını yükle (eski format veya actions boş geldiyse)
+                    tools = await composio.getTools({ apps: Array.from(requiredApps) });
+                    log(`[TEMP] Composio tools (apps fallback) yüklendi: ${tools.length} adet`);
+                }
             } else if (typeof composio.get_tools === "function") {
-                tools = await composio.get_tools({ apps: Array.from(requiredApps) });
+                tools = requestedActions.length > 0
+                    ? await composio.get_tools({ actions: requestedActions })
+                    : await composio.get_tools({ apps: Array.from(requiredApps) });
+                log(`[TEMP] Composio tools (get_tools) yüklendi: ${tools.length} adet`);
             }
-            log(`[TEMP] Composio tools yüklendi: ${tools.length} adet`);
         } else {
             log("[TEMP] MCP app yok, Composio atlanıyor.");
         }
@@ -441,7 +491,21 @@ app.post("/run-agent", async (req, res) => {
             messagesArray.splice(sysIdx + 1, 0, triggerUserMessage);
         }
 
-        // Hiç user mesajı yoksa (ne user_content ne trigger) boş bir mesaj ekle — OpenAI hata vermesin
+        // Önceki çalışmadan gelen konfigürasyon notları — agent'a "geçmişini" ver
+        // Bubble'da kayıtlı configuration_notes_to_myself bir önceki çalışmadan iletiliyor
+        const prevConfigNotes = (properties.configuration_notes_to_myself || "").trim();
+        if (prevConfigNotes) {
+            log(`[CONFIG-NOTES] Önceki konfigürasyon notları agent'a iletiliyor (${prevConfigNotes.length} karakter)`);
+            // Trigger/user mesajından hemen sonra, bir "assistant" sesi gibi değil,
+            // system bağlamı olarak inject et
+            const insertIdx = messagesArray.findIndex(m => m.role !== 'system') ?? messagesArray.length;
+            messagesArray.splice(insertIdx, 0, {
+                role: "user",
+                content: `[GEÇMİŞ KONFİGÜRASYON NOTLARIM]\nBu otomasyonu daha önce kurdum. O çalışmadan kendime bıraktığım notlar:\n\n${prevConfigNotes}\n\nBu notları referans alarak görevi tamamla.`
+            });
+        }
+
+        // Hiç user mesajı yoksa (ne user_content ne trigger ne config notes) boş mesaj ekle
         if (!messagesArray.some(m => m.role === 'user')) {
             messagesArray.push({ role: "user", content: "Görevi talimatlarına göre gerçekleştir." });
         }
@@ -455,9 +519,17 @@ app.post("/run-agent", async (req, res) => {
             chatParams.reasoning = { effort: properties.effort }; // Responses API
         }
 
-        // Native tool tanımlarını composio tools'a ekle
+        // GAIA Native tool tanımlarını ekle (her zaman)
         tools = [...(tools || []), ...NATIVE_TOOL_DEFINITIONS];
-        log(`[TEMP] Toplam tool sayısı: ${tools.length} (${tools.map(t=>t.function?.name||t.name).join(', ')})`);
+
+        // OpenAI built-in tool'ları ekle — sadece Responses API'de çalışır
+        // Chat Completions'da ignore edilir (mappedTools filter'ı yakalar)
+        if (nativeToolDefs.length > 0) {
+            tools = [...tools, ...nativeToolDefs];
+            log(`[TEMP] OpenAI native tools eklendi: ${nativeToolDefs.map(d=>d.type).join(', ')}`);
+        }
+
+        log(`[TEMP] Toplam tool sayısı: ${tools.length} (${tools.map(t=>t.function?.name||t.type||t.name).join(', ')})`);
 
         // Araçları payload'a ekle!
         if (tools && tools.length > 0) {
@@ -476,7 +548,10 @@ app.post("/run-agent", async (req, res) => {
             }
         }
         
-        // JSON Schema - response_format üzerinden enforce et, system message'a dokunma
+        // JSON Schema — response_format enforce + FILE FIELD TESPİTİ
+        // "type": "file" olan field'lar → fileFieldsSet'e alınır, schema'dan çıkarılır.
+        // Kullanıcı json_schema'ya dosya çıktısı için: {"fatura_pdf": {"type": "file"}}
+        // Bu tip OpenAI'ya gönderilmez; sistem otomatik olarak file payload akışına sokar.
         if (properties.json_schema && String(properties.json_schema).trim() !== "") {
             let schemaStr = typeof properties.json_schema === 'string' ? properties.json_schema.trim() : JSON.stringify(properties.json_schema);
             if (!schemaStr.startsWith("{") && !schemaStr.startsWith("[")) {
@@ -489,15 +564,54 @@ app.post("/run-agent", async (req, res) => {
             try { schemaObj = JSON.parse(schemaStr); } catch(e) { log("UYARI: json_schema parse edilemedi, json_object moduna düşüldü. Hata: " + e.message); }
 
             if (schemaObj) {
+                // FORMAT DETECT: Düz properties map mi, yoksa tam schema objesi mi?
+                // Format A (düz): {"field1": {"type":"string"}, "file_out": {"type":"file"}, "required": [...]}
+                // Format B (tam):  {"type":"object", "properties": {...}, "required": [...]}
+                let rawProperties = schemaObj;
+                let rawRequired   = null;
+
+                if (schemaObj.type === 'object' && schemaObj.properties && typeof schemaObj.properties === 'object') {
+                    // Format B — tam JSON Schema
+                    rawProperties = schemaObj.properties;
+                    rawRequired   = Array.isArray(schemaObj.required) ? schemaObj.required : null;
+                } else if (Array.isArray(schemaObj.required)) {
+                    // Format A — düz map ama "required" key'i var
+                    rawRequired   = schemaObj.required;
+                    const { required: _r, ...rest } = schemaObj;
+                    rawProperties = rest;
+                }
+
+                // FILE FIELD TESPİTİ: type:"file" olan key'leri ayır, schema'dan ve required'dan temizle
+                const cleanSchemaObj = {};
+                for (const [k, v] of Object.entries(rawProperties)) {
+                    if (v && typeof v === 'object' && String(v.type || '').toLowerCase() === 'file') {
+                        fileFieldsSet.add(k);
+                        log(`[FILE-FIELDS] Schema'dan tespit: "${k}" → file payload'a yönlendirilecek`);
+                    } else {
+                        cleanSchemaObj[k] = v;
+                    }
+                }
+
+                // required array'den de file field'larını çıkar
+                const cleanRequired = rawRequired
+                    ? rawRequired.filter(k => !fileFieldsSet.has(k))
+                    : null;
+
+                if (fileFieldsSet.size > 0) {
+                    log(`[FILE-FIELDS] Toplam ${fileFieldsSet.size} dosya field'ı schema'dan ayrıldı: ${[...fileFieldsSet].join(', ')}`);
+                    if (rawRequired) log(`[FILE-FIELDS] required array temizlendi: [${rawRequired.join(',')}] → [${(cleanRequired||[]).join(',')}]`);
+                }
+
+                // Temiz schema objesi — required sadece dolu ise eklenir
+                const finalSchema = { type: "object", properties: cleanSchemaObj };
+                if (cleanRequired && cleanRequired.length > 0) finalSchema.required = cleanRequired;
+
                 chatParams.response_format = {
                     type: "json_schema",
                     json_schema: {
                         name: properties.schema_name || "response",
                         strict: false,
-                        schema: {
-                            type: "object",
-                            properties: schemaObj
-                        }
+                        schema: finalSchema
                     }
                 };
             } else {
@@ -509,12 +623,32 @@ app.post("/run-agent", async (req, res) => {
             }
         }
         
+        // FILE PAYLOAD SYSTEM — schema'dan tespit edilen file field'lar için agent talimatı
+        // (json_schema parsing'den sonra çalışır — fileFieldsSet dolu olduğu garantili)
+        // NOT: sadece image/pdf değil, tüm dosya türleri bu sistemi kullanır
+        if (fileFieldsSet.size > 0) {
+            const fileFieldList = [...fileFieldsSet].map(k => `  • "${k}"`).join('\n');
+            // chatParams.messages = messagesArray referansı — splice ile doğrudan eklenebilir
+            const sysIdx = chatParams.messages.findIndex(m => m.role === 'system');
+            const insertIdx = sysIdx >= 0 ? sysIdx + 1 : 0;
+            chatParams.messages.splice(insertIdx, 0, {
+                role: "user",
+                content: `[DOSYA ÇIKTISI KURALI — FILE PAYLOAD SİSTEMİ]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir (image_pdf tipi):\n${fileFieldList}\n\nBu field'lar json_schema'ya dahil edilmemiştir — yine de JSON çıktında şu formatlarda ekle:\n  - Base64: "data:image/png;base64,..." veya ham base64 string\n  - Doğrudan URL: "https://..."\nBu field'lar için herhangi bir upload tool ÇAĞIRMA — platform dosyayı otomatik yükler.\nDiğer JSON field'larınla birlikte aynı obje içinde bulunmalı.`
+            });
+            log(`[FILE-FIELDS] ${fileFieldsSet.size} dosya field talimatı mesaja eklendi: ${[...fileFieldsSet].join(', ')}`);
+        }
+
         // -------------------------
         // BÖLÜM 3: LLM DÖNGÜSÜ
         // -------------------------
         let finalContent = "";
         let runCount = 0;
         const maxRuns = 15; // Node.JS olduğu için döngü sayısını esnetebiliriz!
+        // NOT: Bu alan kavramsal olarak "filepayload" — sadece AI-üretimi görsel değil,
+        // gelecekte PDF ve diğer dosya türlerini de taşıyabilir. Değişken adı aynı kalıyor.
+        // Gaia sisteminde file çıktısı olan her görevin o field'ı zaten custom field olarak tanımlıdır;
+        // bu array formdaki ilgili field'a otomatik uygulanır — GAIA_UPLOAD_FILE tool'una gerek yoktur.
+        let generatedPhotosArray = []; // döngü içinde de doldurulabilir (image_generation_call)
 
         log("════════════════════════════════════");
         log("▶ LLM DÖNGÜSÜ BAŞLIYOR");
@@ -586,12 +720,20 @@ app.post("/run-agent", async (req, res) => {
 
                     let mappedTools = [];
                     if (chatParams.tools) {
-                        mappedTools = chatParams.tools.map(tool => {
-                            if (tool.type === "function" && tool.function) {
-                                return { type: "function", name: tool.function.name, description: tool.function.description || "", parameters: tool.function.parameters || {} };
-                            }
-                            return tool;
-                        });
+                        mappedTools = chatParams.tools
+                            .map(tool => {
+                                if (tool.type === "function" && tool.function) {
+                                    // GAIA / Composio function tool → Responses API formatı
+                                    return { type: "function", name: tool.function.name, description: tool.function.description || "", parameters: tool.function.parameters || {} };
+                                }
+                                // OpenAI native tool (code_interpreter, web_search_preview, image_generation, file_search)
+                                // Responses API bunları olduğu gibi kabul eder
+                                if (['code_interpreter','web_search_preview','image_generation','file_search'].includes(tool.type)) {
+                                    return tool;
+                                }
+                                return null; // Chat Completions'a özgü format — Responses API'de filtrele
+                            })
+                            .filter(Boolean);
                     }
 
                     const payload = { ...chatParams, input: responsesInput };
@@ -639,11 +781,39 @@ app.post("/run-agent", async (req, res) => {
                 if (response.output && Array.isArray(response.output)) {
                     for (const item of response.output) {
                         if (item.type === "function_call" || item.type === "function") {
+                            // GAIA / Composio tool call
                             const funcName = item.name || (item.function && item.function.name);
                             toolCalls.push({
                                 id: item.id || item.call_id || "call_" + Math.random().toString(36).substr(2, 9),
                                 type: "function",
                                 function: { name: funcName, arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments || {}) }
+                            });
+                        } else if (item.type === "image_generation_call") {
+                            // image_generation tool output — base64 PNG
+                            // NOT: filepayload sistemi — sadece image değil, tüm dosya türleri bu yapıyla işlenir
+                            if (item.result) {
+                                log(`[AI-IMG] image_generation_call yakalandı (base64 ${item.result.length} karakter)`);
+                                generatedPhotosArray.push({
+                                    customFieldName: "ai_generated_image",
+                                    newFiles: [{ base64: item.result, filename: "ai_generated_image.png", contentType: "image/png" }],
+                                    newUrls: [], keptUrls: [], removedUrls: []
+                                });
+                            }
+                        } else if (item.type === "web_search_call") {
+                            // web_search tool output — sonuç text olarak assistant mesajına yansır, burada sadece logla
+                            log(`[WEB-SEARCH] web_search_call çalıştı`);
+                        } else if (item.type === "code_interpreter_call") {
+                            // code_interpreter çıktısı — sonuçlar assistant mesajında gelir
+                            log(`[CODE] code_interpreter_call çalıştı | outputs: ${JSON.stringify((item.outputs||[]).map(o=>o.type)).slice(0,100)}`);
+                            // Eğer output içinde image varsa yakala — filepayload sistemi
+                            (item.outputs || []).forEach(o => {
+                                if (o.type === "image" && o.image_url) {
+                                    generatedPhotosArray.push({
+                                        customFieldName: "code_interpreter_image",
+                                        newFiles: [{ base64: o.image_url.includes(',') ? o.image_url.split(',')[1] : o.image_url, filename: "code_output.png", contentType: "image/png" }],
+                                        newUrls: [], keptUrls: [], removedUrls: []
+                                    });
+                                }
                             });
                         } else if (item.type === "text" || item.type === "output_text" || item.type === "message") {
                             let textContent = item.text || item.output_text || item.content || "";
@@ -771,64 +941,127 @@ app.post("/run-agent", async (req, res) => {
         
         let parsedFinalObject = finalContent || "";
         let predictedActionObj = null;
-        let generatedPhotosArray = [];
+        // generatedPhotosArray döngü içinde de doldurulabilir (image_generation_call)
+        // — zaten yukarıda tanımlandı, burada sadece referans
         
         // --- PHOTO PAYLOAD (AI IMAGE DETECTION) ---
         // Eğer LLM bir tool kullandıysa ve bu tool (örn. image_generate) resim URL'si VEYA Base64 text döndürdüyse:
+        // --- TOOL RESPONSE FILE DETECTION (filepayload sistemi) ---
+        // Tool response'lardan gelen dosyaları yakala — NOT: sadece image değil, tüm dosya türleri
         try {
             for (const msg of chatParams.messages) {
                 if (msg.role === "tool" && msg.content) {
-                    
+
                     // 1) RAW BASE64 KONTROLÜ (Veri zaten base64 gelmişse)
-                    // Örn: "base64": "iVBO...", veya "data:image/png;base64,iVBOR..."
-                    const base64Match = msg.content.match(/(?:base64["']?\s*:\s*["']|data:image\/[a-zA-Z]+;base64,)([^"'\\]{100,})/i);
+                    const base64Match = msg.content.match(/(?:base64["']?\s*:\s*["']|data:(?:image|application)\/[a-zA-Z.+-]+;base64,)([^"'\\]{100,})/i);
                     if (base64Match && base64Match[1]) {
-                        log(`[AI-IMG] Doğrudan Base64 verisi yakalandı!`);
+                        const rawVal = base64Match[1];
+                        log(`[FILE-PAYLOAD] Tool response'ta base64 dosya verisi yakalandı!`);
                         generatedPhotosArray.push({
-                            customFieldName: "ai_generated_image", 
-                            base64: base64Match[1]
+                            customFieldName: "ai_generated_file",
+                            newFiles: [{ base64: rawVal, filename: "ai_generated_file.png", contentType: "image/png" }],
+                            newUrls: [], keptUrls: [], removedUrls: []
                         });
-                        continue; // Resmi bulduk, diğer URL taramasına geçmeye gerek yok.
+                        continue;
                     }
 
-                    // 2) URL KONTROLÜ (Eğer base64 yoksa url var mı?)
+                    // 2) URL KONTROLÜ — dosya/görsel URL'si varsa indir
                     const urlMatch = msg.content.match(/https?:\/\/[^\s"'<>]+/g);
                     if (urlMatch) {
                         for (const url of urlMatch) {
-                            if (url.includes("image") || url.includes("dalle") || url.match(/\.(jpeg|jpg|gif|png|webp)$/i)) {
-                                log(`[AI-IMG] Resim URL bulundu, indiriliyor: ${url.substring(0, 50)}...`);
+                            if (url.includes("image") || url.includes("dalle") || url.match(/\.(jpeg|jpg|gif|png|webp|pdf)$/i)) {
+                                log(`[FILE-PAYLOAD] Dosya URL bulundu, indiriliyor: ${url.substring(0, 50)}...`);
                                 try {
                                     const imgRes = await axios.get(url, { responseType: 'arraybuffer' });
                                     const b64 = Buffer.from(imgRes.data, 'binary').toString('base64');
+                                    const isPdf = url.match(/\.pdf$/i);
                                     generatedPhotosArray.push({
-                                        customFieldName: "ai_generated_image", 
-                                        base64: b64
+                                        customFieldName: "ai_generated_file",
+                                        newFiles: [{ base64: b64, filename: isPdf ? "ai_file.pdf" : "ai_image.png", contentType: isPdf ? "application/pdf" : "image/png" }],
+                                        newUrls: [], keptUrls: [], removedUrls: []
                                     });
                                 } catch (e) {
-                                    log(`[AI-IMGHATA] Resim URL den indirilemedi: ${e.message}`);
+                                    log(`[FILE-PAYLOAD] URL'den indirilemedi: ${e.message}`);
                                 }
                             }
                         }
                     }
                 }
             }
-        } catch (e) { log("Photo extraction error: " + e); }
+        } catch (e) { log("File payload extraction error: " + e); }
+
+        // Agent JSON çıktısını işle:
+        // - configuration_notes_to_myself → ayrı webhook field
+        // - file_fields (image_pdf tipi) → photopayload'a taşı, final_json'dan çıkar
+        // - notes_to_user → final_json içinde kalır (form elementi handle eder)
+        let configNotesOutput = "";
+
+        // Dosya içeriği tespit yardımcıları
+        function _isBase64OrUrl(val) {
+            if (typeof val !== 'string') return false;
+            const v = val.trim();
+            return v.startsWith('data:') || /^https?:\/\//i.test(v) || (v.length > 100 && /^[A-Za-z0-9+/=]+$/.test(v.replace(/[\r\n]/g,'')));
+        }
+        function _guessContentType(val, fieldKey) {
+            const v = String(val || '');
+            const k = String(fieldKey || '').toLowerCase();
+            if (v.startsWith('data:')) { const m = v.match(/^data:([^;]+)/); if (m) return m[1]; }
+            if (k.includes('pdf')) return 'application/pdf';
+            if (k.includes('png')) return 'image/png';
+            if (k.includes('jpg') || k.includes('jpeg')) return 'image/jpeg';
+            if (k.includes('webp')) return 'image/webp';
+            if (k.includes('svg')) return 'image/svg+xml';
+            if (/pdf|doc|xls|ppt/i.test(v.slice(0, 80))) return 'application/pdf';
+            return 'image/png'; // default — görsel varsayım
+        }
+        function _guessFilename(val, fieldKey) {
+            const k = String(fieldKey || '').replace(/[^a-z0-9_-]/gi, '_');
+            const ct = _guessContentType(val, fieldKey);
+            const ext = ct.split('/')[1]?.split('+')[0] || 'bin';
+            return `${k}.${ext}`;
+        }
 
         try {
             // GPT'den dönen temiz JSON Objesini yakalama ve listeye çevirme:
             let tempJSON = JSON.parse(parsedFinalObject);
-            
+
             if (typeof tempJSON === 'object' && !Array.isArray(tempJSON)) {
-                
+
                 let mappedList = [];
                 for (let key in tempJSON) {
-                    if (key.trim().toLowerCase() === "predictedaction") {
+                    const keyLow = key.trim().toLowerCase();
+                    if (keyLow === "predictedaction") {
                         predictedActionObj = tempJSON[key];
                         continue;
                     }
+                    // configuration_notes_to_myself: ayrı webhook field, final_json'a dahil edilmez
+                    if (keyLow === "configuration_notes_to_myself") {
+                        configNotesOutput = String(tempJSON[key] || "");
+                        continue;
+                    }
+                    // FILE PAYLOAD: file_fields listesindeki field'lar → photopayload'a, final_json'dan çıkar
+                    // NOT: image/pdf dışında da geçerli — her dosya türü bu sistemi kullanır
+                    if (fileFieldsSet.size > 0 && fileFieldsSet.has(key)) {
+                        const fVal = String(tempJSON[key] || "").trim();
+                        if (fVal && _isBase64OrUrl(fVal)) {
+                            const isUrl = /^https?:\/\//i.test(fVal);
+                            const fileItem = {
+                                customFieldName: key,
+                                newFiles: isUrl ? [] : [{ base64: fVal.includes(',') ? fVal.split(',')[1] : fVal, filename: _guessFilename(fVal, key), contentType: _guessContentType(fVal, key) }],
+                                newUrls: isUrl ? [fVal] : [],
+                                keptUrls: [],
+                                removedUrls: []
+                            };
+                            generatedPhotosArray.push(fileItem);
+                            log(`[FILE-PAYLOAD] "${key}" field'ı photopayload'a taşındı (${isUrl ? 'URL' : 'base64'}, ${fVal.length} karakter)`);
+                        } else {
+                            log(`[FILE-PAYLOAD] UYARI: "${key}" field'ı file_fields'da ama geçerli base64/URL bulunamadı`);
+                        }
+                        continue; // final_json'a ekleme
+                    }
+                    // notes_to_user: final_json içinde kalır — form elementi okur, gösterir, siler
                     let val = tempJSON[key];
-                    if (val === null || val === undefined) val = ""; 
-                    // İstenen o "key":"value" (tam stringleşmiş) şeklini kuruyoruz:
+                    if (val === null || val === undefined) val = "";
                     let valStr = typeof val === 'object' ? JSON.stringify(val) : JSON.stringify(val);
                     mappedList.push(`"${key}":${valStr}`);
                 }
@@ -840,12 +1073,22 @@ app.post("/run-agent", async (req, res) => {
             // Düz metinse string olarak kalır.
         }
 
-        // Tüm alanların standart olarak hep yollanması (Yeni Parametrelerle Birlikte)
+        // Agent notu doldurduysa → yeni notla güncelle (Bubble DB'yi güncelle)
+        // Agent notu boş bıraktıysa → null döndür (Bubble workflow DB'yi güncellemez)
+        const finalConfigNotes = configNotesOutput.trim() ? configNotesOutput : null;
+
+        log(`[CONFIG-NOTES] ${finalConfigNotes !== null ? "YENİ not yazıldı → " + finalConfigNotes.slice(0,100) + (finalConfigNotes.length > 100 ? '...' : '') : "Boş bırakıldı → null (DB güncellenmeyecek)"}`);
+
         const successPayload = {
             status: "SUCCESS",
             final_json: parsedFinalObject,
             predicted_action: predictedActionObj ? JSON.stringify(predictedActionObj) : "",
-            photopayload: generatedPhotosArray.length > 0 ? JSON.stringify(generatedPhotosArray) : "",
+            // "filepayload" — image, PDF ve tüm dosya türleri için.
+            // {items:[...]} formatı photoBackend'in beklediği yapıdır.
+            // Her item: {customFieldName, newFiles:[{base64,filename,contentType}], newUrls:[], keptUrls:[], removedUrls:[]}
+            photopayload: generatedPhotosArray.length > 0 ? JSON.stringify({ items: generatedPhotosArray }) : "",
+            configuration_notes_to_myself: finalConfigNotes,    // null = DB güncellenmez, string = yeni not
+            // notes_to_user: final_json içinde geliyor — form elementi handle eder
             error_message: "",
             auth_url: "",
             app_name: "",
@@ -876,6 +1119,7 @@ app.post("/run-agent", async (req, res) => {
                 final_json: "",
                 predicted_action: "",
                 photopayload: "",
+                configuration_notes_to_myself: "",
                 error_message: err.message || "Unknown error",
                 auth_url: "",
                 app_name: "",
@@ -914,18 +1158,22 @@ app.post("/initialize", async (req, res) => {
         }
 
         // Hangi app'lerin gerektiğini tools_list'ten çıkar
-        let requestedToolsList = [];
+        // Format A (eski): ["mcp_gmail"] | Format B (yeni): [{type, app, display_name}]
+        const requiredApps = new Set();
         const rawTools = properties.tools_list;
         if (rawTools && rawTools.length > 5) {
             try {
                 const parsedArray = typeof rawTools === 'string' ? JSON.parse(rawTools) : rawTools;
-                requestedToolsList = parsedArray.map(t => typeof t === 'object' ? t.type : t);
+                parsedArray.forEach(t => {
+                    if (typeof t === 'object' && t !== null) {
+                        if (t.app) requiredApps.add(t.app.toLowerCase());
+                        if (t.type && t.type.toLowerCase().startsWith('mcp_')) requiredApps.add(t.type.split("mcp_")[1].toLowerCase());
+                    } else if (typeof t === 'string' && t.includes("mcp_")) {
+                        requiredApps.add(t.split("mcp_")[1].toLowerCase());
+                    }
+                });
             } catch(e) {}
         }
-        const requiredApps = new Set();
-        requestedToolsList.forEach(tool => {
-            if (tool && tool.includes("mcp_")) requiredApps.add(tool.split("mcp_")[1].toLowerCase());
-        });
 
         let entity;
         if (typeof composio.getEntity === "function") {
