@@ -306,7 +306,7 @@ app.post("/run-agent", async (req, res) => {
         // Chat Completions API bu tool'ları desteklemez — sadece Responses API'de çalışır.
         const OPENAI_NATIVE_TOOL_IDS = new Set(['code_interpreter','web_search','web_search_preview','image_generation','file_search']);
         const OPENAI_NATIVE_TOOL_MAP = {
-            code_interpreter:  { type: 'code_interpreter' },
+            code_interpreter:  { type: 'code_interpreter', container: { type: 'auto' } },
             web_search:        { type: 'web_search_preview' },
             web_search_preview:{ type: 'web_search_preview' },
             image_generation:  { type: 'image_generation' },
