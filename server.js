@@ -582,11 +582,20 @@ app.post("/run-agent", async (req, res) => {
                 }
 
                 // FILE FIELD TESPİTİ: type:"file" olan key'leri ayır, schema'dan ve required'dan temizle
+                // Desteklenen formatlar:
+                //   "type": "file"              → tek string
+                //   "type": ["file", "null"]    → nullable array (AI'ın ürettiği format)
+                //   "type": ["string","file"]   → mix array
+                const _isFileType = (t) => {
+                    if (!t) return false;
+                    if (Array.isArray(t)) return t.some(x => String(x).toLowerCase() === 'file');
+                    return String(t).toLowerCase() === 'file';
+                };
                 const cleanSchemaObj = {};
                 for (const [k, v] of Object.entries(rawProperties)) {
-                    if (v && typeof v === 'object' && String(v.type || '').toLowerCase() === 'file') {
+                    if (v && typeof v === 'object' && _isFileType(v.type)) {
                         fileFieldsSet.add(k);
-                        log(`[FILE-FIELDS] Schema'dan tespit: "${k}" → file payload'a yönlendirilecek`);
+                        log(`[FILE-FIELDS] Schema'dan tespit: "${k}" (type=${JSON.stringify(v.type)}) → file payload'a yönlendirilecek`);
                     } else {
                         cleanSchemaObj[k] = v;
                     }
@@ -606,12 +615,48 @@ app.post("/run-agent", async (req, res) => {
                 const finalSchema = { type: "object", properties: cleanSchemaObj };
                 if (cleanRequired && cleanRequired.length > 0) finalSchema.required = cleanRequired;
 
+                // OpenAI schema sanitizer — Responses API'nin kabul etmediği formatları düzelt:
+                //   • type array ["string","null"] → anyOf: [{type:"string"},{type:"null"}]
+                //   • type array ["null"] veya boş → type:"string" (fallback)
+                //   • unknown type ("file" vb.) zaten yukarıda çıkarıldı
+                const _sanitizeSchemaNode = (node) => {
+                    if (!node || typeof node !== 'object' || Array.isArray(node)) return node;
+                    const out = {};
+                    for (const [key, val] of Object.entries(node)) {
+                        if (key === 'type' && Array.isArray(val)) {
+                            // Array type → anyOf dönüştür
+                            const types = val.filter(t => typeof t === 'string' && t !== 'file');
+                            if (types.length === 0) {
+                                out['type'] = 'string'; // tamamen boş kaldıysa fallback
+                            } else if (types.length === 1) {
+                                out['type'] = types[0]; // tek eleman → düz string
+                            } else {
+                                // Birden fazla tip → anyOf
+                                out['anyOf'] = types.map(t => ({ type: t }));
+                                // 'type' key'ini EKLEME — anyOf ile çakışır
+                                continue;
+                            }
+                        } else if (key === 'properties' && val && typeof val === 'object') {
+                            out[key] = {};
+                            for (const [pk, pv] of Object.entries(val)) {
+                                out[key][pk] = _sanitizeSchemaNode(pv);
+                            }
+                        } else if (key === 'items' && val && typeof val === 'object') {
+                            out[key] = _sanitizeSchemaNode(val);
+                        } else {
+                            out[key] = val;
+                        }
+                    }
+                    return out;
+                };
+                const sanitizedSchema = _sanitizeSchemaNode(finalSchema);
+
                 chatParams.response_format = {
                     type: "json_schema",
                     json_schema: {
                         name: properties.schema_name || "response",
                         strict: false,
-                        schema: finalSchema
+                        schema: sanitizedSchema
                     }
                 };
             } else {
@@ -631,9 +676,14 @@ app.post("/run-agent", async (req, res) => {
             // chatParams.messages = messagesArray referansı — splice ile doğrudan eklenebilir
             const sysIdx = chatParams.messages.findIndex(m => m.role === 'system');
             const insertIdx = sysIdx >= 0 ? sysIdx + 1 : 0;
+            // code_interpreter kullanılıyor mu? (native tools listesinden tespit)
+            const _hasCodeInterpreter = (nativeToolDefs || []).some(t => t.type === 'code_interpreter');
+            const fileInstruction = _hasCodeInterpreter
+                ? `[DOSYA ÇIKTISI KURALI — CODE INTERPRETER]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir:\n${fileFieldList}\n\ncode_interpreter ile bu dosyaları üretirken:\n  • Dosya adını MUTLAKA field adıyla aynı yap (uzantı ekleyebilirsin). Örnek: "${[...fileFieldsSet][0]}.pdf"\n  • Dosya field'larını JSON çıktına EKLEME — platform dosyayı code_interpreter çıktısından otomatik okur ve ilgili alana kaydeder.\n  • JSON çıktında yalnızca non-file field'ları döndür.`
+                : `[DOSYA ÇIKTISI KURALI — FILE PAYLOAD SİSTEMİ]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir (image_pdf tipi):\n${fileFieldList}\n\nBu field'lar json_schema'ya dahil edilmemiştir — yine de JSON çıktında şu formatlarda ekle:\n  - Base64: "data:image/png;base64,..." veya ham base64 string\n  - Doğrudan URL: "https://..."\nBu field'lar için herhangi bir upload tool ÇAĞIRMA — platform dosyayı otomatik yükler.\nDiğer JSON field'larınla birlikte aynı obje içinde bulunmalı.`;
             chatParams.messages.splice(insertIdx, 0, {
                 role: "user",
-                content: `[DOSYA ÇIKTISI KURALI — FILE PAYLOAD SİSTEMİ]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir (image_pdf tipi):\n${fileFieldList}\n\nBu field'lar json_schema'ya dahil edilmemiştir — yine de JSON çıktında şu formatlarda ekle:\n  - Base64: "data:image/png;base64,..." veya ham base64 string\n  - Doğrudan URL: "https://..."\nBu field'lar için herhangi bir upload tool ÇAĞIRMA — platform dosyayı otomatik yükler.\nDiğer JSON field'larınla birlikte aynı obje içinde bulunmalı.`
+                content: fileInstruction
             });
             log(`[FILE-FIELDS] ${fileFieldsSet.size} dosya field talimatı mesaja eklendi: ${[...fileFieldsSet].join(', ')}`);
         }
@@ -803,18 +853,77 @@ app.post("/run-agent", async (req, res) => {
                             // web_search tool output — sonuç text olarak assistant mesajına yansır, burada sadece logla
                             log(`[WEB-SEARCH] web_search_call çalıştı`);
                         } else if (item.type === "code_interpreter_call") {
-                            // code_interpreter çıktısı — sonuçlar assistant mesajında gelir
+                            // code_interpreter çıktısı — image ve files (PDF vb.) çıktıları
                             log(`[CODE] code_interpreter_call çalıştı | outputs: ${JSON.stringify((item.outputs||[]).map(o=>o.type)).slice(0,100)}`);
-                            // Eğer output içinde image varsa yakala — filepayload sistemi
-                            (item.outputs || []).forEach(o => {
+
+                            // Dosya adından fileFieldsSet field key'i bul
+                            // Kural: dosya adı (uzantısız) field adıyla eşleşiyorsa o field'a at
+                            //        eşleşme yoksa tek file field varsa onu kullan, yoksa generic
+                            const _matchFileField = (filename) => {
+                                const base = (filename || '').replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+                                for (const k of fileFieldsSet) {
+                                    if (k.toLowerCase() === base || base.includes(k.toLowerCase()) || k.toLowerCase().includes(base)) return k;
+                                }
+                                if (fileFieldsSet.size === 1) return [...fileFieldsSet][0];
+                                return null; // eşleşme bulunamadı
+                            };
+
+                            for (const o of (item.outputs || [])) {
+                                // — inline image çıktısı
                                 if (o.type === "image" && o.image_url) {
+                                    const imgB64 = o.image_url.includes(',') ? o.image_url.split(',')[1] : o.image_url;
+                                    const imgField = _matchFileField('image') || "code_interpreter_image";
+                                    log(`[CODE] image output → field "${imgField}"`);
                                     generatedPhotosArray.push({
-                                        customFieldName: "code_interpreter_image",
-                                        newFiles: [{ base64: o.image_url.includes(',') ? o.image_url.split(',')[1] : o.image_url, filename: "code_output.png", contentType: "image/png" }],
+                                        customFieldName: imgField,
+                                        newFiles: [{ base64: imgB64, filename: imgField + ".png", contentType: "image/png" }],
                                         newUrls: [], keptUrls: [], removedUrls: []
                                     });
                                 }
-                            });
+                                // — file çıktısı (PDF, XLSX vb.) → OpenAI file API'den indir
+                                else if (o.type === "files" && Array.isArray(o.files)) {
+                                    for (const f of o.files) {
+                                        const fid = f.file_id;
+                                        const fname = f.name || f.filename || (fid + '.bin');
+                                        log(`[CODE] files output: file_id=${fid} name=${fname} — indiriliyor...`);
+                                        try {
+                                            // openai.files.content() → ReadableStream / Buffer
+                                            const fileResp = await openai.files.content(fid);
+                                            // SDK döndürdüğü tipe göre buffer al
+                                            let buf;
+                                            if (Buffer.isBuffer(fileResp)) {
+                                                buf = fileResp;
+                                            } else if (fileResp && typeof fileResp.arrayBuffer === 'function') {
+                                                buf = Buffer.from(await fileResp.arrayBuffer());
+                                            } else if (fileResp && fileResp.body) {
+                                                // Node.js ReadableStream
+                                                const chunks = [];
+                                                for await (const chunk of fileResp.body) chunks.push(chunk);
+                                                buf = Buffer.concat(chunks);
+                                            } else {
+                                                buf = Buffer.from(await fileResp.text(), 'utf8');
+                                            }
+                                            const b64 = buf.toString('base64');
+                                            // Content-type tahmin
+                                            const extLow = fname.split('.').pop().toLowerCase();
+                                            const ctMap = { pdf:'application/pdf', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', svg:'image/svg+xml', xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', csv:'text/csv' };
+                                            const ct = ctMap[extLow] || 'application/octet-stream';
+                                            // Field eşleştir
+                                            const targetField = _matchFileField(fname) || "code_interpreter_file";
+                                            log(`[CODE] file indirildi: ${fname} (${buf.length} byte, ${ct}) → field "${targetField}"`);
+                                            generatedPhotosArray.push({
+                                                customFieldName: targetField,
+                                                newFiles: [{ base64: b64, filename: fname, contentType: ct }],
+                                                newUrls: [], keptUrls: [], removedUrls: []
+                                            });
+                                            // Geçici file'ı sil (opsiyonel — kotayı temizler)
+                                            try { await openai.files.del(fid); } catch(_) {}
+                                        } catch (dlErr) {
+                                            log(`[CODE] HATA: file_id=${fid} indirilemedi: ${dlErr.message}`);
+                                        }
+                                    }
+                                }
+                            }
                         } else if (item.type === "text" || item.type === "output_text" || item.type === "message") {
                             let textContent = item.text || item.output_text || item.content || "";
                             if (Array.isArray(textContent)) {
