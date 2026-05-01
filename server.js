@@ -358,6 +358,10 @@ app.post("/run-agent", async (req, res) => {
         // Tespit schema parsing'den SONRA yapılacak — şimdi sadece Set'i oluştur.
         // NOT: sadece image/pdf değil, tüm dosya türleri için geçerlidir.
         const fileFieldsSet = new Set(); // json_schema parsing'de doldurulacak (aşağıda)
+        // fileFieldsMeta: field adı → { customFieldId, photoId }
+        // json_schema'dan gelen ek metadata — customFieldId varsa customFieldMapJson'a gerek kalmaz
+        // photoId varsa mevcut Photo kaydı update edilir (yeni yaratılmaz)
+        const fileFieldsMeta = new Map();
 
         // -------------------------
         // BÖLÜM 1: AUTH KONTROLÜ (sadece MCP app varsa)
@@ -595,7 +599,12 @@ app.post("/run-agent", async (req, res) => {
                 for (const [k, v] of Object.entries(rawProperties)) {
                     if (v && typeof v === 'object' && _isFileType(v.type)) {
                         fileFieldsSet.add(k);
-                        log(`[FILE-FIELDS] Schema'dan tespit: "${k}" (type=${JSON.stringify(v.type)}) → file payload'a yönlendirilecek`);
+                        // customFieldId: Bubble'daki custom field UUID (customFieldMapJson gerektirmez)
+                        // photoId: varolan Photo kaydı ID'si (update senaryosu — aynı field için yeni Photo yaratılmaz)
+                        const _cfi = String(v.customFieldId || v.customfield_id || v.bubble_field_id || v.fieldId || "").trim();
+                        const _pid = String(v.photoId || v.photo_id || v.photoRecordId || v.record_id || "").trim();
+                        fileFieldsMeta.set(k, { customFieldId: _cfi, photoId: _pid });
+                        log(`[FILE-FIELDS] Schema'dan tespit: "${k}" (type=${JSON.stringify(v.type)})${_cfi ? ` customFieldId=${_cfi}` : ""}${_pid ? ` photoId=${_pid}` : ""} → file payload'a yönlendirilecek`);
                     } else {
                         cleanSchemaObj[k] = v;
                     }
@@ -712,6 +721,30 @@ app.post("/run-agent", async (req, res) => {
             let response;
             let usedResponsesAPI = false;
 
+            // ── OpenAI retry — rate limit + transient hata koruması ─────────────
+            // 429 (rate limit) ve 5xx (geçici) hatalarında exponential backoff ile yeniden dene.
+            // Max 3 deneme: 1s → 3s → 9s arası bekleme.
+            const _openaiCallWithRetry = async (callFn) => {
+                const maxRetries = 3;
+                for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                    try {
+                        return await callFn();
+                    } catch (err) {
+                        const status = err.status || err.statusCode || (err.response && err.response.status);
+                        const isRetryable = status === 429 || (status >= 500 && status < 600) || err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT';
+                        if (isRetryable && attempt < maxRetries) {
+                            // Retry-After header'ı varsa onu kullan, yoksa exponential backoff
+                            const retryAfterSec = err.headers && err.headers['retry-after'] ? Number(err.headers['retry-after']) : null;
+                            const waitMs = retryAfterSec ? (retryAfterSec * 1000) : (Math.pow(3, attempt) * 1000);
+                            log(`[RETRY] OpenAI ${status || err.code} hatası — ${attempt}/${maxRetries} deneme, ${waitMs}ms bekleniyor...`);
+                            await new Promise(r => setTimeout(r, waitMs));
+                        } else {
+                            throw err; // retry edilemez ya da max deneme doldu
+                        }
+                    }
+                }
+            };
+
             try {
                 log(`[TEMP] OpenAI API çağrısı yapılıyor... (responses API: ${!!(openai.responses && typeof openai.responses.create === 'function')})`);
                 if (openai.responses && typeof openai.responses.create === 'function') {
@@ -810,11 +843,11 @@ app.post("/run-agent", async (req, res) => {
                         delete payload.response_format;
                     }
                     
-                    response = await openai.responses.create(payload);
+                    response = await _openaiCallWithRetry(() => openai.responses.create(payload));
                     usedResponsesAPI = true;
                     log(`Responses API kullanıldı (Döngü: ${runCount}).`);
                 } else if (openai.chat && typeof openai.chat.completions.create === 'function') {
-                    response = await openai.chat.completions.create(chatParams);
+                    response = await _openaiCallWithRetry(() => openai.chat.completions.create(chatParams));
                 } else {
                     throw new Error("OpenAI kütüphanesi uyumsuz.");
                 }
@@ -843,8 +876,12 @@ app.post("/run-agent", async (req, res) => {
                             // NOT: filepayload sistemi — sadece image değil, tüm dosya türleri bu yapıyla işlenir
                             if (item.result) {
                                 log(`[AI-IMG] image_generation_call yakalandı (base64 ${item.result.length} karakter)`);
+                                const _imgFieldName = "ai_generated_image";
+                                const _imgMeta = fileFieldsMeta.get(_imgFieldName) || {};
                                 generatedPhotosArray.push({
-                                    customFieldName: "ai_generated_image",
+                                    customFieldName: _imgFieldName,
+                                    customFieldId: _imgMeta.customFieldId || "",
+                                    photoId: _imgMeta.photoId || "",
                                     newFiles: [{ base64: item.result, filename: "ai_generated_image.png", contentType: "image/png" }],
                                     newUrls: [], keptUrls: [], removedUrls: []
                                 });
@@ -853,8 +890,46 @@ app.post("/run-agent", async (req, res) => {
                             // web_search tool output — sonuç text olarak assistant mesajına yansır, burada sadece logla
                             log(`[WEB-SEARCH] web_search_call çalıştı`);
                         } else if (item.type === "code_interpreter_call") {
-                            // code_interpreter çıktısı — image ve files (PDF vb.) çıktıları
-                            log(`[CODE] code_interpreter_call çalıştı | outputs: ${JSON.stringify((item.outputs||[]).map(o=>o.type)).slice(0,100)}`);
+                            // code_interpreter çıktısı — image ve files (PDF, XLSX vb.) çıktıları
+                            // Responses API farklı output type ismi kullanabilir — hepsini yakala
+                            log(`[CODE] code_interpreter_call çalıştı | outputs: ${JSON.stringify((item.outputs||[]).map(o=>o.type)).slice(0,200)}`);
+
+                            // ── CONTENT-TYPE haritası (tüm yaygın tipler) ──────────────────────
+                            const _EXT_CT_MAP = {
+                                pdf:  'application/pdf',
+                                png:  'image/png',
+                                jpg:  'image/jpeg',
+                                jpeg: 'image/jpeg',
+                                gif:  'image/gif',
+                                webp: 'image/webp',
+                                svg:  'image/svg+xml',
+                                bmp:  'image/bmp',
+                                ico:  'image/x-icon',
+                                tif:  'image/tiff',
+                                tiff: 'image/tiff',
+                                xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                xls:  'application/vnd.ms-excel',
+                                docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                                doc:  'application/msword',
+                                pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                                ppt:  'application/vnd.ms-powerpoint',
+                                csv:  'text/csv',
+                                tsv:  'text/tab-separated-values',
+                                txt:  'text/plain',
+                                html: 'text/html',
+                                json: 'application/json',
+                                xml:  'application/xml',
+                                zip:  'application/zip',
+                                gz:   'application/gzip',
+                                tar:  'application/x-tar',
+                                mp4:  'video/mp4',
+                                mp3:  'audio/mpeg',
+                                wav:  'audio/wav',
+                            };
+                            const _extToContentType = (filename) => {
+                                const ext = (filename || '').split('.').pop().toLowerCase();
+                                return _EXT_CT_MAP[ext] || 'application/octet-stream';
+                            };
 
                             // Dosya adından fileFieldsSet field key'i bul
                             // Kural: dosya adı (uzantısız) field adıyla eşleşiyorsa o field'a at
@@ -868,59 +943,88 @@ app.post("/run-agent", async (req, res) => {
                                 return null; // eşleşme bulunamadı
                             };
 
+                            // OpenAI file_id'den içeriği indir → base64 buffer
+                            const _downloadFileById = async (fid) => {
+                                const fileResp = await openai.files.content(fid);
+                                if (Buffer.isBuffer(fileResp)) return fileResp;
+                                if (fileResp && typeof fileResp.arrayBuffer === 'function') return Buffer.from(await fileResp.arrayBuffer());
+                                if (fileResp && fileResp.body) {
+                                    const chunks = [];
+                                    for await (const chunk of fileResp.body) chunks.push(chunk);
+                                    return Buffer.concat(chunks);
+                                }
+                                return Buffer.from(await fileResp.text(), 'utf8');
+                            };
+
+                            // file_id ile dosyayı işle (indirme + payload ekleme)
+                            const _processFileId = async (fid, fname) => {
+                                try {
+                                    log(`[CODE] file indiriliyor: file_id=${fid} name=${fname}`);
+                                    const buf = await _downloadFileById(fid);
+                                    const b64 = buf.toString('base64');
+                                    const ct = _extToContentType(fname);
+                                    const targetField = _matchFileField(fname) || "code_interpreter_file";
+                                    // Schema'dan gelen metadata — customFieldId + photoId
+                                    const _fMeta = fileFieldsMeta.get(targetField) || {};
+                                    log(`[CODE] file indirildi: ${fname} (${buf.length} byte, ${ct}) → field "${targetField}"${_fMeta.customFieldId ? ` cfId=${_fMeta.customFieldId}` : ""}${_fMeta.photoId ? ` photoId=${_fMeta.photoId}` : ""}`);
+                                    generatedPhotosArray.push({
+                                        customFieldName: targetField,
+                                        customFieldId: _fMeta.customFieldId || "",
+                                        photoId: _fMeta.photoId || "",
+                                        newFiles: [{ base64: b64, filename: fname, contentType: ct }],
+                                        newUrls: [], keptUrls: [], removedUrls: []
+                                    });
+                                    try { await openai.files.del(fid); } catch(_) {}
+                                } catch (dlErr) {
+                                    log(`[CODE] HATA: file_id=${fid} indirilemedi: ${dlErr.message}`);
+                                }
+                            };
+
                             for (const o of (item.outputs || [])) {
-                                // — inline image çıktısı
-                                if (o.type === "image" && o.image_url) {
-                                    const imgB64 = o.image_url.includes(',') ? o.image_url.split(',')[1] : o.image_url;
+                                const otype = (o.type || '').toLowerCase();
+
+                                // ── inline image çıktısı (type: "image" veya "output_image") ──
+                                if ((otype === "image" || otype === "output_image") && (o.image_url || o.url)) {
+                                    const rawUrl = o.image_url || o.url || '';
+                                    const imgB64 = rawUrl.includes(',') ? rawUrl.split(',')[1] : rawUrl;
                                     const imgField = _matchFileField('image') || "code_interpreter_image";
+                                    const _imgMeta2 = fileFieldsMeta.get(imgField) || {};
                                     log(`[CODE] image output → field "${imgField}"`);
                                     generatedPhotosArray.push({
                                         customFieldName: imgField,
+                                        customFieldId: _imgMeta2.customFieldId || "",
+                                        photoId: _imgMeta2.photoId || "",
                                         newFiles: [{ base64: imgB64, filename: imgField + ".png", contentType: "image/png" }],
                                         newUrls: [], keptUrls: [], removedUrls: []
                                     });
                                 }
-                                // — file çıktısı (PDF, XLSX vb.) → OpenAI file API'den indir
-                                else if (o.type === "files" && Array.isArray(o.files)) {
+                                // ── file listesi (type: "files") — klasik format ──
+                                else if (otype === "files" && Array.isArray(o.files)) {
                                     for (const f of o.files) {
-                                        const fid = f.file_id;
+                                        const fid = f.file_id || f.id;
                                         const fname = f.name || f.filename || (fid + '.bin');
-                                        log(`[CODE] files output: file_id=${fid} name=${fname} — indiriliyor...`);
-                                        try {
-                                            // openai.files.content() → ReadableStream / Buffer
-                                            const fileResp = await openai.files.content(fid);
-                                            // SDK döndürdüğü tipe göre buffer al
-                                            let buf;
-                                            if (Buffer.isBuffer(fileResp)) {
-                                                buf = fileResp;
-                                            } else if (fileResp && typeof fileResp.arrayBuffer === 'function') {
-                                                buf = Buffer.from(await fileResp.arrayBuffer());
-                                            } else if (fileResp && fileResp.body) {
-                                                // Node.js ReadableStream
-                                                const chunks = [];
-                                                for await (const chunk of fileResp.body) chunks.push(chunk);
-                                                buf = Buffer.concat(chunks);
-                                            } else {
-                                                buf = Buffer.from(await fileResp.text(), 'utf8');
-                                            }
-                                            const b64 = buf.toString('base64');
-                                            // Content-type tahmin
-                                            const extLow = fname.split('.').pop().toLowerCase();
-                                            const ctMap = { pdf:'application/pdf', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg', svg:'image/svg+xml', xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', csv:'text/csv' };
-                                            const ct = ctMap[extLow] || 'application/octet-stream';
-                                            // Field eşleştir
-                                            const targetField = _matchFileField(fname) || "code_interpreter_file";
-                                            log(`[CODE] file indirildi: ${fname} (${buf.length} byte, ${ct}) → field "${targetField}"`);
-                                            generatedPhotosArray.push({
-                                                customFieldName: targetField,
-                                                newFiles: [{ base64: b64, filename: fname, contentType: ct }],
-                                                newUrls: [], keptUrls: [], removedUrls: []
-                                            });
-                                            // Geçici file'ı sil (opsiyonel — kotayı temizler)
-                                            try { await openai.files.del(fid); } catch(_) {}
-                                        } catch (dlErr) {
-                                            log(`[CODE] HATA: file_id=${fid} indirilemedi: ${dlErr.message}`);
-                                        }
+                                        await _processFileId(fid, fname);
+                                    }
+                                }
+                                // ── tekil dosya (type: "output_file" | "file") ──
+                                else if ((otype === "output_file" || otype === "file") && (o.file_id || o.id)) {
+                                    const fid = o.file_id || o.id;
+                                    const fname = o.name || o.filename || (fid + '.bin');
+                                    await _processFileId(fid, fname);
+                                }
+                                // ── container'dan file referansı (type: "file_path") ──
+                                else if (otype === "file_path" && (o.file_id || o.id)) {
+                                    const fid = o.file_id || o.id;
+                                    const fname = o.path ? o.path.split('/').pop() : (o.name || o.filename || (fid + '.bin'));
+                                    await _processFileId(fid, fname);
+                                }
+                                // ── bilinmeyen format — tüm alanları tara, file_id içerenleri işle ──
+                                else if (o.file_id || o.id) {
+                                    const fid = o.file_id || o.id;
+                                    const fname = o.name || o.filename || o.path?.split('/').pop() || (fid + '.bin');
+                                    if (typeof fid === 'string' && fid.startsWith('file-')) {
+                                        log(`[CODE] bilinmeyen output tipi "${otype}" ama file_id var → işleniyor`);
+                                        await _processFileId(fid, fname);
                                     }
                                 }
                             }
@@ -1061,32 +1165,57 @@ app.post("/run-agent", async (req, res) => {
             for (const msg of chatParams.messages) {
                 if (msg.role === "tool" && msg.content) {
 
-                    // 1) RAW BASE64 KONTROLÜ (Veri zaten base64 gelmişse)
-                    const base64Match = msg.content.match(/(?:base64["']?\s*:\s*["']|data:(?:image|application)\/[a-zA-Z.+-]+;base64,)([^"'\\]{100,})/i);
+                    // 1) RAW BASE64 KONTROLÜ — data URI veya json "base64":"..." alanı
+                    const base64Match = msg.content.match(/(?:"base64"\s*:\s*"|data:(?:[\w-]+\/[\w.+-]+);base64,)([A-Za-z0-9+/=\r\n]{100,})/i);
                     if (base64Match && base64Match[1]) {
-                        const rawVal = base64Match[1];
-                        log(`[FILE-PAYLOAD] Tool response'ta base64 dosya verisi yakalandı!`);
+                        const rawVal = base64Match[1].replace(/[\r\n]/g, '');
+                        // data URI'dan MIME çek, yoksa binary magic bytes tespiti
+                        const dataUriMime = msg.content.match(/data:([\w-]+\/[\w.+-]+);base64,/i);
+                        let ct = dataUriMime ? dataUriMime[1] : 'application/octet-stream';
+                        if (ct === 'application/octet-stream') {
+                            try {
+                                const head = Buffer.from(rawVal.slice(0, 12), 'base64').toString('binary');
+                                if (head.startsWith('%PDF')) ct = 'application/pdf';
+                                else if (head.startsWith('\x89PNG')) ct = 'image/png';
+                                else if (head.startsWith('PK')) ct = 'application/zip';
+                            } catch(_) {}
+                        }
+                        const _extForCt = { 'application/pdf':'pdf','image/png':'png','image/jpeg':'jpg','image/gif':'gif','application/zip':'zip','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'xlsx','application/vnd.openxmlformats-officedocument.wordprocessingml.document':'docx' };
+                        const ext = _extForCt[ct] || (ct.split('/')[1]||'bin').replace(/[^a-z0-9]/g,'').slice(0,10) || 'bin';
+                        log(`[FILE-PAYLOAD] Tool response'ta base64 dosya verisi yakalandı! (${ct})`);
                         generatedPhotosArray.push({
                             customFieldName: "ai_generated_file",
-                            newFiles: [{ base64: rawVal, filename: "ai_generated_file.png", contentType: "image/png" }],
+                            newFiles: [{ base64: rawVal, filename: `ai_generated_file.${ext}`, contentType: ct }],
                             newUrls: [], keptUrls: [], removedUrls: []
                         });
                         continue;
                     }
 
-                    // 2) URL KONTROLÜ — dosya/görsel URL'si varsa indir
+                    // 2) URL KONTROLÜ — tüm dosya türleri için URL tespiti
                     const urlMatch = msg.content.match(/https?:\/\/[^\s"'<>]+/g);
                     if (urlMatch) {
+                        const _FILE_EXT_RX = /\.(jpeg|jpg|gif|png|webp|svg|pdf|xlsx|xls|docx|doc|csv|txt|zip|mp4|mp3)(\?.*)?$/i;
+                        const _CT_FROM_URL = (url) => {
+                            const m = url.match(/\.(jpeg|jpg|gif|png|webp|svg|pdf|xlsx|xls|docx|doc|csv|txt|zip|mp4|mp3)(\?.*)?$/i);
+                            if (!m) return null;
+                            const ext = m[1].toLowerCase();
+                            const map = { jpeg:'image/jpeg',jpg:'image/jpeg',gif:'image/gif',png:'image/png',webp:'image/webp',svg:'image/svg+xml',pdf:'application/pdf',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',xls:'application/vnd.ms-excel',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',doc:'application/msword',csv:'text/csv',txt:'text/plain',zip:'application/zip',mp4:'video/mp4',mp3:'audio/mpeg' };
+                            return map[ext] || null;
+                        };
                         for (const url of urlMatch) {
-                            if (url.includes("image") || url.includes("dalle") || url.match(/\.(jpeg|jpg|gif|png|webp|pdf)$/i)) {
-                                log(`[FILE-PAYLOAD] Dosya URL bulundu, indiriliyor: ${url.substring(0, 50)}...`);
+                            const urlCt = _CT_FROM_URL(url);
+                            const isDalleOrImg = url.includes("dalle") || url.includes("oaidalleapiprodscus") || url.includes("image");
+                            if (urlCt || isDalleOrImg) {
+                                log(`[FILE-PAYLOAD] Dosya URL bulundu, indiriliyor: ${url.substring(0, 80)}...`);
                                 try {
-                                    const imgRes = await axios.get(url, { responseType: 'arraybuffer' });
-                                    const b64 = Buffer.from(imgRes.data, 'binary').toString('base64');
-                                    const isPdf = url.match(/\.pdf$/i);
+                                    const dlRes = await axios.get(url, { responseType: 'arraybuffer', timeout: 30000 });
+                                    const b64 = Buffer.from(dlRes.data, 'binary').toString('base64');
+                                    const resCt = (dlRes.headers['content-type'] || urlCt || 'application/octet-stream').split(';')[0].trim();
+                                    const resExt = url.match(_FILE_EXT_RX)?.[1] || resCt.split('/')[1]?.replace(/[^a-z0-9]/g,'').slice(0,10) || 'bin';
+                                    const fname = `ai_generated_file.${resExt}`;
                                     generatedPhotosArray.push({
                                         customFieldName: "ai_generated_file",
-                                        newFiles: [{ base64: b64, filename: isPdf ? "ai_file.pdf" : "ai_image.png", contentType: isPdf ? "application/pdf" : "image/png" }],
+                                        newFiles: [{ base64: b64, filename: fname, contentType: resCt }],
                                         newUrls: [], keptUrls: [], removedUrls: []
                                     });
                                 } catch (e) {
@@ -1111,22 +1240,71 @@ app.post("/run-agent", async (req, res) => {
             const v = val.trim();
             return v.startsWith('data:') || /^https?:\/\//i.test(v) || (v.length > 100 && /^[A-Za-z0-9+/=]+$/.test(v.replace(/[\r\n]/g,'')));
         }
+        // Tüm yaygın dosya türleri için content-type haritası
+        const _FIELD_CT_MAP = {
+            pdf:  'application/pdf',
+            png:  'image/png',
+            jpg:  'image/jpeg',
+            jpeg: 'image/jpeg',
+            gif:  'image/gif',
+            webp: 'image/webp',
+            svg:  'image/svg+xml',
+            xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            xls:  'application/vnd.ms-excel',
+            docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            doc:  'application/msword',
+            pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            ppt:  'application/vnd.ms-powerpoint',
+            csv:  'text/csv',
+            txt:  'text/plain',
+            html: 'text/html',
+            json: 'application/json',
+            xml:  'application/xml',
+            zip:  'application/zip',
+            mp4:  'video/mp4',
+            mp3:  'audio/mpeg',
+        };
+        const _FIELD_EXT_MAP = {
+            'application/pdf': 'pdf',
+            'image/png': 'png',
+            'image/jpeg': 'jpg',
+            'image/gif': 'gif',
+            'image/webp': 'webp',
+            'image/svg+xml': 'svg',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+            'application/vnd.ms-excel': 'xls',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+            'application/msword': 'doc',
+            'text/csv': 'csv',
+            'text/plain': 'txt',
+            'application/json': 'json',
+            'application/zip': 'zip',
+            'video/mp4': 'mp4',
+        };
         function _guessContentType(val, fieldKey) {
             const v = String(val || '');
             const k = String(fieldKey || '').toLowerCase();
-            if (v.startsWith('data:')) { const m = v.match(/^data:([^;]+)/); if (m) return m[1]; }
-            if (k.includes('pdf')) return 'application/pdf';
-            if (k.includes('png')) return 'image/png';
-            if (k.includes('jpg') || k.includes('jpeg')) return 'image/jpeg';
-            if (k.includes('webp')) return 'image/webp';
-            if (k.includes('svg')) return 'image/svg+xml';
-            if (/pdf|doc|xls|ppt/i.test(v.slice(0, 80))) return 'application/pdf';
-            return 'image/png'; // default — görsel varsayım
+            // data URI → extract MIME
+            if (v.startsWith('data:')) { const m = v.match(/^data:([^;,]+)/); if (m) return m[1].trim(); }
+            // field adından tahmin — tüm bilinen uzantılar
+            for (const [ext, ct] of Object.entries(_FIELD_CT_MAP)) {
+                if (k.includes(ext)) return ct;
+            }
+            // ham base64 içeriğinden PDF magic bytes tespiti (%PDF)
+            if (v.length > 20) {
+                try {
+                    const head = Buffer.from(v.slice(0, 12), 'base64').toString('binary');
+                    if (head.startsWith('%PDF')) return 'application/pdf';
+                    if (head.startsWith('PK')) return 'application/zip'; // zip/docx/xlsx magic
+                } catch(_) {}
+            }
+            return 'application/octet-stream'; // güvenli default
         }
         function _guessFilename(val, fieldKey) {
             const k = String(fieldKey || '').replace(/[^a-z0-9_-]/gi, '_');
             const ct = _guessContentType(val, fieldKey);
-            const ext = ct.split('/')[1]?.split('+')[0] || 'bin';
+            // MIME → uzantı haritasından al, yoksa MIME ikinci kısmını sanitize et
+            const ext = _FIELD_EXT_MAP[ct] || (ct.split('/')[1] || 'bin').replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin';
             return `${k}.${ext}`;
         }
 
@@ -1154,15 +1332,18 @@ app.post("/run-agent", async (req, res) => {
                         const fVal = String(tempJSON[key] || "").trim();
                         if (fVal && _isBase64OrUrl(fVal)) {
                             const isUrl = /^https?:\/\//i.test(fVal);
+                            const _jMeta = fileFieldsMeta.get(key) || {};
                             const fileItem = {
                                 customFieldName: key,
+                                customFieldId: _jMeta.customFieldId || "",
+                                photoId: _jMeta.photoId || "",
                                 newFiles: isUrl ? [] : [{ base64: fVal.includes(',') ? fVal.split(',')[1] : fVal, filename: _guessFilename(fVal, key), contentType: _guessContentType(fVal, key) }],
                                 newUrls: isUrl ? [fVal] : [],
                                 keptUrls: [],
                                 removedUrls: []
                             };
                             generatedPhotosArray.push(fileItem);
-                            log(`[FILE-PAYLOAD] "${key}" field'ı photopayload'a taşındı (${isUrl ? 'URL' : 'base64'}, ${fVal.length} karakter)`);
+                            log(`[FILE-PAYLOAD] "${key}" field'ı photopayload'a taşındı (${isUrl ? 'URL' : 'base64'}, ${fVal.length} karakter)${_jMeta.customFieldId ? ` cfId=${_jMeta.customFieldId}` : ""}${_jMeta.photoId ? ` photoId=${_jMeta.photoId}` : ""}`);
                         } else {
                             log(`[FILE-PAYLOAD] UYARI: "${key}" field'ı file_fields'da ama geçerli base64/URL bulunamadı`);
                         }
