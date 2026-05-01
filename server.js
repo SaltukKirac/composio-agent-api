@@ -761,74 +761,68 @@ Platform, dosyayi field ile eslestirmek icin dosya adini kullanir.
 Farkli bir ad kullanirsaniz dosya KAYBEDILIR ve ilgili field bos kalir.
 
 == DOSYA ADI KURALLARI ==
-- Turkce/ozel karakter KULLANMA: ihtar_dilekcesi degil ihtar_dilekce_si (ama zaten yukaridaki adlar hazir)
-- /tmp/ altina yaz: /tmp/field_adi.uzanti
+- /tmp/ altina yaz, dosya adi yukarida belirtilen BIREBIR olmali
 
-== ZORUNLU PDF URETIM YAKLAŞIMI ==
-PDF ureteceksen asagidaki yontemi BIREBIR kullan.
-fpdf2 KULLANMA (yuklu olmayabilir). reportlab kullan ama TTFont / DejaVu KAYDETME.
-Helvetica standart PDF fontu — hicbir font dosyasina ihtiyac duymaz.
+== ZORUNLU PDF URETIM KURALI ==
+reportlab kullan. TTFont / DejaVu KAYDETME. Helvetica yeterli.
 
-# --- BIREBIR BU YAPIDA KOD YAZ ---
+!! KRITIK — ENCODING HATASI ONLEME !!
+Reportlab Helvetica fontu Turkce karakterleri (g-breve, s-cedilla vb.) DESTEKLEMEZ.
+Bu karakterler c.drawString() icine girerse KOD CALISMAYI DURDURUR ve dosya OLUSTURULAMAZ.
+COZUM: Her string degiskeni TANIMLARKEN to_ascii() ile sar. Baska yol yok.
+
+# === ZORUNLU KOD SABLONU — BIREBIR BU YAPIDA YAZ ===
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
+from reportlab.lib.utils import simpleSplit
 
 def to_ascii(text):
+    # Turkce → ASCII (bu fonksiyon olmadan PDF olusturulamaz)
     tr = {'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}
     return ''.join(tr.get(c, c) for c in str(text))
 
-out_path = '/tmp/ihtar_dilekce.pdf'
+# DEGISKEN TANIMLARKEN to_ascii KULLAN — sonra degil, burada:
+davaci_ad   = to_ascii("...")   # ← to_ascii burada
+davaci_adres = to_ascii("...")  # ← to_ascii burada
+konu        = to_ascii("...")   # ← to_ascii burada
+# ...diger tum string degiskenler de boyle tanimlanmali
+
+out_path = '/tmp/field_adi.pdf'   # ← yukaridaki zorunlu dosya adini kullan
 c = canvas.Canvas(out_path, pagesize=A4)
 W, H = A4
 margin = 2.5 * cm
 y = H - margin
-line_h = 14
+lh = 14
 
-c.setFont('Helvetica-Bold', 13)
-c.drawString(margin, y, to_ascii('IHTARNAME'))
-y -= line_h * 2
+def yaz(metin, bold=False):
+    global y
+    font = 'Helvetica-Bold' if bold else 'Helvetica'
+    size = 13 if bold else 11
+    c.setFont(font, size)
+    satirlar = simpleSplit(metin, font, size, W - 2 * margin)
+    for s in satirlar:
+        if y < margin + lh:
+            c.showPage(); c.setFont(font, size); y = H - margin
+        c.drawString(margin, y, s)
+        y -= lh
+    y -= 4
 
-c.setFont('Helvetica', 11)
-satirlar = [
-    to_ascii('Muhatap: ...'),
-    to_ascii('Konu: ...'),
-    '',
-    to_ascii('Detay metni buraya...'),
-]
-for satir in satirlar:
-    if y < margin + line_h:
-        c.showPage()
-        c.setFont('Helvetica', 11)
-        y = H - margin
-    c.drawString(margin, y, satir)
-    y -= line_h
+yaz(to_ascii('IHTARNAME'), bold=True)
+yaz(davaci_ad)
+yaz(davaci_adres)
+yaz(konu)
+# ...diger satirlar
 
 c.save()
-# --- KOD SONU ---
+# === SABLON SONU ===
 
-Uzun metinleri otomatik satirlara bol:
-from reportlab.lib.utils import simpleSplit
-for paragraf in paragraflar:
-    satirlar = simpleSplit(to_ascii(paragraf), 'Helvetica', 11, W - 2 * margin)
-    for satir in satirlar:
-        if y < margin + line_h:
-            c.showPage(); c.setFont('Helvetica', 11); y = H - margin
-        c.drawString(margin, y, satir)
-        y -= line_h
-
-== ZORUNLU KURALLAR ==
-1. Dosyayi MUTLAKA /tmp/ altina yaz
-2. c.save() cagrisini YAPTIKTAN SONRA devam et — kaydetmeden bitmez
-3. try/except kullaniyorsan exception YUTMA:
-   try:
-       ...pdf uret...
-       c.save()
-   except Exception as e:
-       import traceback; traceback.print_exc(); raise
-4. TTFont / registerFont / DejaVu KULLANMA
-5. JSON ciktisina dosya field'ini EKLEME — platform dosyayi otomatik okur
-6. JSON ciktisinda yalnizca non-file field'lari dondur`;
+== ONEMLI KURALLAR ==
+1. to_ascii() SADECE drawString oncesinde degil, DEGISKEN TANIMINDA kullan
+2. c.save() cagrisini MUTLAKA yap
+3. TTFont / registerFont KULLANMA
+4. JSON ciktisina dosya field'ini EKLEME
+5. JSON ciktisinda sadece non-file field'lari dondur`;
                   })())
                 : `[DOSYA ÇIKTISI KURALI — FILE PAYLOAD SİSTEMİ]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir (image_pdf tipi):\n${fileFieldList}\n\nBu field'lar json_schema'ya dahil edilmemiştir — yine de JSON çıktında şu formatlarda ekle:\n  - Base64: "data:image/png;base64,..." veya ham base64 string\n  - Doğrudan URL: "https://..."\nBu field'lar için herhangi bir upload tool ÇAĞIRMA — platform dosyayı otomatik yükler.\nDiğer JSON field'larınla birlikte aynı obje içinde bulunmalı.`;
             chatParams.messages.splice(insertIdx, 0, {
@@ -1771,6 +1765,82 @@ Dosya olmayan field'lar icin normal JSON formatini kullan.`;
         const finalConfigNotes = configNotesOutput.trim() ? configNotesOutput : null;
 
         log(`[CONFIG-NOTES] ${finalConfigNotes !== null ? "YENİ not yazıldı → " + finalConfigNotes.slice(0,100) + (finalConfigNotes.length > 100 ? '...' : '') : "Boş bırakıldı → null (DB güncellenmeyecek)"}`);
+
+        // ── Node.js PDF FALLBACK ─────────────────────────────────────────────────────
+        // code_interpreter container boş geldi (0 dosya) ama file field var →
+        // finaljson'daki text field'larından biri ile field adı eşleşiyorsa Node.js'te PDF üret.
+        // Schema'da "sourceField" belirtilmişse onu kullan, yoksa field adı benzerliğine bak.
+        if (generatedPhotosArray.length === 0 && fileFieldsSet.size > 0) {
+            try {
+                // finaljson'u parse et — text içeriklere eriş
+                let _fbJson = null;
+                try { _fbJson = JSON.parse(finalContent); } catch(_) {}
+                if (_fbJson && typeof _fbJson === 'object') {
+                    for (const fileField of fileFieldsSet) {
+                        const _fbMeta = fileFieldsMeta.get(fileField) || {};
+                        // sourceField varsa onu kullan, yoksa field adı ile eşleşen text field ara
+                        const _srcField = _fbMeta.sourceField || _fbMeta.source_field || null;
+                        let _fbText = null;
+                        if (_srcField && _fbJson[_srcField] != null) {
+                            _fbText = String(_fbJson[_srcField]);
+                        } else {
+                            // fileField adıyla benzer text field'ı bul (PDF→text heuristik)
+                            const _ffNorm = fileField.toLowerCase().replace(/pdf|dosya|file/gi,'').trim();
+                            for (const [k, v] of Object.entries(_fbJson)) {
+                                if (v && typeof v === 'string' && v.length > 30) {
+                                    const _kNorm = k.toLowerCase().replace(/pdf|dosya|file/gi,'').trim();
+                                    if (_kNorm.includes(_ffNorm) || _ffNorm.includes(_kNorm)) {
+                                        _fbText = v; break;
+                                    }
+                                }
+                            }
+                            // Hâlâ bulunamadıysa ve tek bir uzun text field varsa onu kullan
+                            if (!_fbText) {
+                                const _longFields = Object.entries(_fbJson).filter(([,v]) => typeof v === 'string' && v.length > 80);
+                                if (_longFields.length === 1) _fbText = _longFields[0][1];
+                            }
+                        }
+                        if (!_fbText) { log(`[PDF-FALLBACK] "${fileField}" için kaynak text bulunamadı — atlanıyor`); continue; }
+
+                        log(`[PDF-FALLBACK] "${fileField}" için Node.js PDF üretiliyor (${_fbText.length} karakter text)...`);
+                        // ASCII dönüşüm
+                        const _fbToAscii = (s) => String(s).replace(/[İıŞşÇçĞğÜüÖö]/g, c =>
+                            ({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c));
+
+                        // PDFKit ile basit PDF üret
+                        const PDFDocument = (() => { try { return require('pdfkit'); } catch(_) { return null; } })();
+                        if (!PDFDocument) { log(`[PDF-FALLBACK] pdfkit yüklü değil — fallback atlanamadı`); continue; }
+
+                        const _fbBuf = await new Promise((resolve, reject) => {
+                            const doc = new PDFDocument({ margin: 50, size: 'A4' });
+                            const chunks = [];
+                            doc.on('data', chunk => chunks.push(chunk));
+                            doc.on('end', () => resolve(Buffer.concat(chunks)));
+                            doc.on('error', reject);
+                            // Satır satır yaz
+                            const lines = _fbToAscii(_fbText).split('\n');
+                            doc.font('Helvetica').fontSize(11);
+                            for (const line of lines) {
+                                if (line.trim() === '') { doc.moveDown(0.5); }
+                                else { doc.text(line, { continued: false }); }
+                            }
+                            doc.end();
+                        });
+
+                        const _fbFilename = fileField.replace(/[^a-zA-Z0-9_.-]/g,'_').toLowerCase() + '.pdf';
+                        generatedPhotosArray.push({
+                            customFieldName: fileField,
+                            customFieldId: _fbMeta.customFieldId || '',
+                            photoId: _fbMeta.photoId || '',
+                            newFiles: [{ base64: _fbBuf.toString('base64'), filename: _fbFilename, contentType: 'application/pdf' }],
+                            newUrls: [], keptUrls: [], removedUrls: []
+                        });
+                        log(`[PDF-FALLBACK] "${fileField}" → ${_fbFilename} (${_fbBuf.length} byte) üretildi ✓`);
+                    }
+                }
+            } catch (_fbErr) { log(`[PDF-FALLBACK] Hata: ${_fbErr.message}`); }
+        }
+        // ── PDF FALLBACK SONU ────────────────────────────────────────────────────────
 
         const successPayload = {
             status: "SUCCESS",
