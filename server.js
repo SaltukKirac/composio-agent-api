@@ -1365,7 +1365,7 @@ Dosya olmayan field'lar icin normal JSON formatini kullan.`;
                                     const targetField = _matchFileField(fname);
                                     if (!targetField) {
                                         log(`[CODE] ⚠️ EŞLEŞME BULUNAMADI: "${fname}" → fileFieldsSet: [${[...fileFieldsSet].join(', ')}] — AI field adını kullanmadı, dosya KAYBEDILDI.`);
-                                        continue;
+                                        return;
                                     }
                                     // Schema'dan gelen metadata — customFieldId + photoId
                                     const _fMeta = fileFieldsMeta.get(targetField) || {};
