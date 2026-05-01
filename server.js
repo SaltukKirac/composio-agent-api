@@ -916,7 +916,38 @@ app.post("/run-agent", async (req, res) => {
 
             if (usedResponsesAPI) {
                 if (response.output && Array.isArray(response.output)) {
+                    // Tüm response.output item type'larını logla — yeni API formatlarını debug etmek için
+                    log(`[RESP] response.output item tipleri: ${response.output.map(i => i.type || '?').join(', ')}`);
                     for (const item of response.output) {
+                        // ── Top-level dosya item'ları — yeni container API'de code_interpreter_call.outputs yerine
+                        // response.output'un kendisinde ayrı item olarak gelebilir
+                        if ((item.type === 'file' || item.type === 'output_file' || item.type === 'file_path') && (item.file_id || item.id)) {
+                            const _tlFid = item.file_id || item.id;
+                            const _tlFname = item.name || item.filename || item.path?.split('/').pop() || (_tlFid + '.bin');
+                            log(`[CODE] top-level file item bulundu: type=${item.type} file_id=${_tlFid} name=${_tlFname}`);
+                            // _processFileId bu noktada henüz tanımlı değil — satır içi işle
+                            try {
+                                const _tlResp = await openai.files.content(_tlFid);
+                                let _tlBuf;
+                                if (Buffer.isBuffer(_tlResp)) _tlBuf = _tlResp;
+                                else if (_tlResp && typeof _tlResp.arrayBuffer === 'function') _tlBuf = Buffer.from(await _tlResp.arrayBuffer());
+                                else if (_tlResp && _tlResp.body) { const _c=[]; for await (const _ch of _tlResp.body) _c.push(_ch); _tlBuf = Buffer.concat(_c); }
+                                else _tlBuf = Buffer.from(await _tlResp.text(), 'utf8');
+                                const _tlExt = _tlFname.split('.').pop().toLowerCase();
+                                const _tlCtMap = { pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',csv:'text/csv',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+                                const _tlCt = _tlCtMap[_tlExt] || 'application/octet-stream';
+                                const _tlBase = _tlFname.replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+                                let _tlField = null;
+                                for (const k of fileFieldsSet) { if (k.toLowerCase() === _tlBase || _tlBase.includes(k.toLowerCase()) || k.toLowerCase().includes(_tlBase)) { _tlField = k; break; } }
+                                if (!_tlField && fileFieldsSet.size === 1) _tlField = [...fileFieldsSet][0];
+                                _tlField = _tlField || 'code_interpreter_file';
+                                const _tlMeta = fileFieldsMeta.get(_tlField) || {};
+                                log(`[CODE] top-level file indirildi: ${_tlFname} (${_tlBuf.length} byte, ${_tlCt}) → field "${_tlField}"`);
+                                generatedPhotosArray.push({ customFieldName: _tlField, customFieldId: _tlMeta.customFieldId || '', photoId: _tlMeta.photoId || '', newFiles: [{ base64: _tlBuf.toString('base64'), filename: _tlFname, contentType: _tlCt }], newUrls: [], keptUrls: [], removedUrls: [] });
+                                try { await openai.files.del(_tlFid); } catch(_) {}
+                            } catch(_tlErr) { log(`[CODE] top-level file indirilemedi: ${_tlErr.message}`); }
+                            continue;
+                        }
                         if (item.type === "function_call" || item.type === "function") {
                             // GAIA / Composio tool call
                             const funcName = item.name || (item.function && item.function.name);
