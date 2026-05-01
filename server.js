@@ -746,7 +746,64 @@ app.post("/run-agent", async (req, res) => {
                     // Her field için ASCII-safe dosya adı üret (Türkçe/özel karakter → container'da sorun çıkarır)
                     const _toAsciiSafe = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[İıŞşÇçĞğÜüÖö]/g, c => ({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c)).replace(/[^a-zA-Z0-9_.-]/g,'_').toLowerCase();
                     const fieldExamples = [...fileFieldsSet].map(k => `  • "${k}" → dosya adı: "${_toAsciiSafe(k)}.pdf" (veya .xlsx/.png — türüne göre)`).join('\n');
-                    return `[DOSYA ÇIKTISI KURALI — CODE INTERPRETER]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir:\n${fileFieldList}\n\ncode_interpreter ile bu dosyaları üretirken:\n${fieldExamples}\n\nÖNEMLİ — Dosya adı kuralları:\n  • Dosya adında Türkçe veya özel karakter KULLANMA (container yakalayamaz)\n  • Türkçe harfleri ASCII'ye çevir: İ→I, Ş→S, Ç→C, Ğ→G, Ü→U, Ö→O, boşluk→_\n  • Örnek: "İhtar Dilekçesi PDF" → "ihtar_dilekçesi_pdf.pdf" DEĞİL → "ihtar_dilekce_pdf.pdf"\n  • Mümkünse /tmp/ klasörüne yaz: open('/tmp/dosya_adi.pdf', 'wb')\n  • PDF için fpdf2 veya reportlab kullanabilirsin; Türkçe karakter desteği için UTF-8 font kaydı şart\n  • Dosya field'larını JSON çıktına EKLEME — platform dosyayı code_interpreter çıktısından otomatik okur\n  • JSON çıktında yalnızca non-file field'ları döndür`;
+                    return `[DOSYA CIKTISI KURALI — CODE INTERPRETER]
+Bu gorevin asagidaki field'lari dosya ciktisi icin ayrilmistir:
+${fileFieldList}
+
+== ZORUNLU DOSYA ADI KURALLARI ==
+Dosya adinda Turkce veya ozel karakter KESINLIKLE KULLANMA.
+  Yanlis: "ihtar_dilekce_si_pdf.pdf"  (c-cedilla iceriyor)
+  Dogru:  "ihtar_dilekce_pdf.pdf"     (tamamen ASCII)
+Bosluk karakteri yerine alt cizgi (_) kullan.
+
+Her field icin onerilen ASCII dosya adi:
+${fieldExamples}
+
+== ZORUNLU PDF URETIM YAKLAŞIMI ==
+PDF ureteceksen MUTLAKA fpdf2 kullan. reportlab KULLANMA (DejaVu font hatasi riski).
+
+# Calistirilabilir ornek — bu kodu baz al:
+from fpdf import FPDF
+
+def to_ascii(text):
+    # Turkce harf → ASCII donusum tablosu
+    tr = {
+        'İ':'I', 'ı':'i',
+        'Ş':'S', 'ş':'s',
+        'Ç':'C', 'ç':'c',
+        'Ğ':'G', 'ğ':'g',
+        'Ü':'U', 'ü':'u',
+        'Ö':'O', 'ö':'o'
+    }
+    result = ''
+    for ch in str(text):
+        result += tr.get(ch, ch)
+    return result
+
+pdf = FPDF()
+pdf.add_page()
+pdf.set_font('Helvetica', size=11)
+# Metni ASCII'ye cevir, sonra yaz:
+for line in content_lines:
+    pdf.cell(0, 8, to_ascii(line), new_x='LMARGIN', new_y='NEXT')
+out_path = '/tmp/ihtar_dilekce.pdf'
+pdf.output(out_path)
+print(f'DOSYA_OK:{out_path}')
+
+== ZORUNLU KURALLAR ==
+1. Dosyayi MUTLAKA /tmp/ altina yaz: /tmp/dosya_adi.pdf
+2. Yazdiktan sonra MUTLAKA su satirı yazdir: print(f"DOSYA_OK:/tmp/dosya_adi.pdf")
+3. try/except kullaniyorsan exception KESINLIKLE YUTMA — su sekilde yaz:
+   try:
+       ...pdf uret...
+   except Exception as e:
+       import traceback
+       print(f"HATA: {e}")
+       traceback.print_exc()
+       raise
+4. reportlab KULLANMA — fpdf2 kullan
+5. JSON ciktisina dosya field'ini EKLEME — platform dosyayi code_interpreter ciktisinda otomatik okur
+6. JSON ciktisinda yalnizca non-file field'lari dondur`;
                   })())
                 : `[DOSYA ÇIKTISI KURALI — FILE PAYLOAD SİSTEMİ]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir (image_pdf tipi):\n${fileFieldList}\n\nBu field'lar json_schema'ya dahil edilmemiştir — yine de JSON çıktında şu formatlarda ekle:\n  - Base64: "data:image/png;base64,..." veya ham base64 string\n  - Doğrudan URL: "https://..."\nBu field'lar için herhangi bir upload tool ÇAĞIRMA — platform dosyayı otomatik yükler.\nDiğer JSON field'larınla birlikte aynı obje içinde bulunmalı.`;
             chatParams.messages.splice(insertIdx, 0, {
@@ -992,9 +1049,21 @@ app.post("/run-agent", async (req, res) => {
                             const _respTopKeys = Object.keys(response).filter(k=>!['output','usage'].includes(k));
                             log(`[CODE] response üst alanlar: ${JSON.stringify(Object.fromEntries(_respTopKeys.map(k=>[k, typeof response[k]==='string'?response[k].slice(0,100):response[k]])))}`);
                             // Text çıktıları (hata mesajları da buraya düşer)
+                            // DOSYA_OK:/tmp/xxx.pdf satırını yakala — container 0 döndürse bile dosya bilgisi buradan gelir
+                            const _dosyaOkPaths = [];
                             for (const _o of (item.outputs||[])) {
-                                if (_o.type === 'text' || _o.type === 'output_text') log(`[CODE] text output: ${String(_o.text||_o.output_text||'').slice(0,400)}`);
-                                if (_o.type === 'error' || _o.type === 'stderr') log(`[CODE] HATA output: ${String(_o.text||_o.message||'').slice(0,400)}`);
+                                const _oText = String(_o.text||_o.output_text||_o.message||'');
+                                if (_o.type === 'text' || _o.type === 'output_text') {
+                                    log(`[CODE] text output: ${_oText.slice(0,600)}`);
+                                    // DOSYA_OK:/tmp/dosya_adi.pdf → dosya adi yakala
+                                    const _dosyaOkRx = /DOSYA_OK:([^\s\n]+)/g;
+                                    let _dm;
+                                    while ((_dm = _dosyaOkRx.exec(_oText)) !== null) {
+                                        _dosyaOkPaths.push(_dm[1].trim());
+                                        log(`[CODE] DOSYA_OK sinyali yakalandi: ${_dm[1].trim()}`);
+                                    }
+                                }
+                                if (_o.type === 'error' || _o.type === 'stderr') log(`[CODE] HATA output: ${_oText.slice(0,600)}`);
                             }
                             // Container dosya listesi — yeni API'de dosyalar item.outputs yerine container'da saklanıyor olabilir
                             const _containerId = response.container?.id || response.container_id || item.container_id;
@@ -1003,27 +1072,66 @@ app.post("/run-agent", async (req, res) => {
                                 try {
                                     // openai.beta.containers veya openai.containers API
                                     const _containerFiles = await (openai.beta?.containers?.files?.list || openai.containers?.files?.list)?.call(openai.beta?.containers?.files || openai.containers?.files, _containerId) ?? null;
+                                    // Container file indirme yardımcı fonksiyonu
+                                    const _downloadContainerFile = async (_cfId, _cfName) => {
+                                        const _cfCtMapLocal = {pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',xls:'application/vnd.ms-excel',csv:'text/csv',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',doc:'application/msword',txt:'text/plain',zip:'application/zip'};
+                                        const _cfExt = (_cfName||'').split('.').pop().toLowerCase();
+                                        const _cfCt = _cfCtMapLocal[_cfExt] || 'application/octet-stream';
+                                        const _cfField = (() => { for (const k of fileFieldsSet) { const kn=_toNorm(k),bn=_toNorm((_cfName||'').replace(/\.[^.]+$/,'')); if(kn===bn||bn.includes(kn)||kn.includes(bn)) return k; } return fileFieldsSet.size===1?[...fileFieldsSet][0]:'code_interpreter_file'; })();
+                                        const _cfMeta = fileFieldsMeta.get(_cfField) || {};
+                                        // Önce openai.files.content() dene
+                                        let _cfBuf = null;
+                                        if (_cfId) {
+                                            try {
+                                                const _cfResp = await openai.files.content(_cfId);
+                                                if (Buffer.isBuffer(_cfResp)) _cfBuf = _cfResp;
+                                                else if (_cfResp && typeof _cfResp.arrayBuffer === 'function') _cfBuf = Buffer.from(await _cfResp.arrayBuffer());
+                                                else if (_cfResp && _cfResp.body) { const _cc=[]; for await (const _ch of _cfResp.body) _cc.push(_ch); _cfBuf = Buffer.concat(_cc); }
+                                                else if (typeof _cfResp.text === 'function') _cfBuf = Buffer.from(await _cfResp.text(), 'utf8');
+                                            } catch(_e1) {
+                                                log(`[CODE] openai.files.content hatası: ${_e1.message}`);
+                                                // Alternatif: container files retrieve endpoint
+                                                try {
+                                                    const _cfRaw = await (openai.beta?.containers?.files?.retrieve || openai.containers?.files?.retrieve)?.call(openai.beta?.containers?.files || openai.containers?.files, _containerId, _cfId);
+                                                    if (_cfRaw && _cfRaw.content) _cfBuf = Buffer.from(_cfRaw.content, 'base64');
+                                                } catch(_e2) { log(`[CODE] container files retrieve hatası: ${_e2.message}`); }
+                                            }
+                                        }
+                                        if (_cfBuf && _cfBuf.length > 0) {
+                                            log(`[CODE] container file indirildi: ${_cfName} (${_cfBuf.length} byte, ${_cfCt}) → field "${_cfField}"`);
+                                            generatedPhotosArray.push({ customFieldName: _cfField, customFieldId: _cfMeta.customFieldId||'', photoId: _cfMeta.photoId||'', newFiles: [{ base64: _cfBuf.toString('base64'), filename: _cfName, contentType: _cfCt }], newUrls:[], keptUrls:[], removedUrls:[] });
+                                            return true;
+                                        } else {
+                                            log(`[CODE] container file boş veya indirilemedi: ${_cfName} (id=${_cfId})`);
+                                            return false;
+                                        }
+                                    };
+
                                     if (_containerFiles && _containerFiles.data) {
                                         log(`[CODE] container dosya sayısı: ${_containerFiles.data.length}`);
                                         for (const _cf of _containerFiles.data) {
                                             log(`[CODE] container file: id=${_cf.id} name=${_cf.filename||_cf.name}`);
                                             const _cfName = _cf.filename || _cf.name || (_cf.id + '.bin');
-                                            // container file indirme — openai.files.content() veya container files API
-                                            try {
-                                                const _cfResp = await openai.files.content(_cf.id);
-                                                let _cfBuf;
-                                                if (Buffer.isBuffer(_cfResp)) _cfBuf = _cfResp;
-                                                else if (_cfResp && typeof _cfResp.arrayBuffer === 'function') _cfBuf = Buffer.from(await _cfResp.arrayBuffer());
-                                                else if (_cfResp && _cfResp.body) { const _cc=[]; for await (const _ch of _cfResp.body) _cc.push(_ch); _cfBuf = Buffer.concat(_cc); }
-                                                else _cfBuf = Buffer.from(await _cfResp.text(), 'utf8');
-                                                const _cfExt = _cfName.split('.').pop().toLowerCase();
-                                                const _cfCtMap = {pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',csv:'text/csv',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'};
-                                                const _cfCt = _cfCtMap[_cfExt] || 'application/octet-stream';
-                                                const _cfField = (() => { for (const k of fileFieldsSet) { const kn=_toNorm(k),bn=_toNorm(_cfName.replace(/\.[^.]+$/,'')); if(kn===bn||bn.includes(kn)||kn.includes(bn)) return k; } return fileFieldsSet.size===1?[...fileFieldsSet][0]:'code_interpreter_file'; })();
-                                                const _cfMeta = fileFieldsMeta.get(_cfField) || {};
-                                                log(`[CODE] container file indirildi: ${_cfName} (${_cfBuf.length} byte) → field "${_cfField}"`);
-                                                generatedPhotosArray.push({ customFieldName: _cfField, customFieldId: _cfMeta.customFieldId||'', photoId: _cfMeta.photoId||'', newFiles: [{ base64: _cfBuf.toString('base64'), filename: _cfName, contentType: _cfCt }], newUrls:[], keptUrls:[], removedUrls:[] });
-                                            } catch (_cfErr) { log(`[CODE] container file indirilemedi: ${_cfErr.message}`); }
+                                            try { await _downloadContainerFile(_cf.id, _cfName); } catch (_cfErr) { log(`[CODE] container file indirilemedi: ${_cfErr.message}`); }
+                                        }
+                                        // Container 0 dosya döndürdüyse ve DOSYA_OK sinyali varsa — container list API gecikmeli olabilir
+                                        // Bu durumda dosyayı output items aracılığıyla bulmaya çalış
+                                        if (_containerFiles.data.length === 0 && _dosyaOkPaths.length > 0) {
+                                            log(`[CODE] Container 0 dosya döndürdü ama DOSYA_OK sinyali var — output items'ta file aranıyor...`);
+                                            for (const _dok of _dosyaOkPaths) {
+                                                const _dokName = _dok.split('/').pop();
+                                                log(`[CODE] DOSYA_OK path: ${_dok} → dosya adı: ${_dokName} — output items'ta aranıyor`);
+                                                // response.output içinde bu dosyayı referans eden bir item var mı?
+                                                for (const _ri of (response.output||[])) {
+                                                    const _riFid = _ri.file_id || _ri.id;
+                                                    const _riFname = _ri.filename || _ri.name || (_ri.file && (_ri.file.filename || _ri.file.name));
+                                                    if (_riFid && (_riFname || _dok)) {
+                                                        const _matchName = _riFname || _dokName;
+                                                        log(`[CODE] response.output item: type=${_ri.type} id=${_riFid} name=${_matchName}`);
+                                                        try { await _downloadContainerFile(_riFid, _matchName || _dokName); } catch(_) {}
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 } catch (_clErr) { log(`[CODE] container files API hatası: ${_clErr.message}`); }
