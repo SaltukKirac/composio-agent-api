@@ -567,13 +567,30 @@ app.post("/run-agent", async (req, res) => {
             schemaStr = schemaStr.replace(/[\r\n\t]+/g, ' ');
             // String içindeki kontrol karakterleri
             schemaStr = schemaStr.replace(/[\x00-\x1F\x7F]/g, ' ');
-            // Trailing comma — sık yapılan hata: {a:1, b:2,}  veya [1,2,]
-            schemaStr = schemaStr.replace(/,\s*([}\]])/g, '$1');
             // Tek tırnak → çift tırnak (bazı kullanıcılar böyle gönderebilir)
-            // Dikkat: sadece key/value sınırlarında çevir, diğer karakterlere dokunma
             if (!schemaStr.includes('"') && schemaStr.includes("'")) {
                 schemaStr = schemaStr.replace(/'/g, '"');
             }
+            // ── BOZUK FORMAT ONARIMI: key-value çiftleri type array'inin içine yazılmış ──
+            // Hatalı: "type":["file","customFieldId":"uuid","null"]
+            // Doğru:  "type":["file","null"],"customFieldId":"uuid"
+            // Bu format hatası Bubble plugin'den sık gelebilir — otomatik onar
+            schemaStr = schemaStr.replace(/"type"\s*:\s*\[([^\]]+)\]/g, (match, inner) => {
+                const kvPairs = [];
+                // Array içindeki "key":"value" çiftlerini çıkar
+                let cleaned = inner.replace(/"([^"\s,\[\]{}]+)"\s*:\s*"([^"]*)"\s*/g, (m, k, v) => {
+                    kvPairs.push(`"${k}":"${v}"`);
+                    return '';
+                });
+                // Array'deki artık virgülleri temizle
+                cleaned = cleaned.replace(/,\s*,/g, ',').replace(/^[\s,]+|[\s,]+$/g, '').trim();
+                const typeArr = `"type":[${cleaned}]`;
+                // Çıkarılan key-value'ları array'in yanına sibling olarak ekle
+                return kvPairs.length > 0 ? typeArr + ',' + kvPairs.join(',') : typeArr;
+            });
+            // Trailing comma — sık yapılan hata: {a:1, b:2,} veya [1,2,]
+            // (type array onarımından SONRA çalışmalı)
+            schemaStr = schemaStr.replace(/,\s*([}\]])/g, '$1');
 
             // ── Gaia internal key'ler — bunlar file field metadata, OpenAI'ya GİTMEMELİ ──
             // schema parse'dan önce ve sonra iki kez temizlenir
@@ -930,6 +947,13 @@ app.post("/run-agent", async (req, res) => {
                             // code_interpreter çıktısı — image ve files (PDF, XLSX vb.) çıktıları
                             // Responses API farklı output type ismi kullanabilir — hepsini yakala
                             log(`[CODE] code_interpreter_call çalıştı | outputs: ${JSON.stringify((item.outputs||[]).map(o=>o.type)).slice(0,200)}`);
+                            // Çalışan kodu logla — outputs:[] durumunda debug için kritik
+                            if (item.code) log(`[CODE] çalışan kod (ilk 800): ${String(item.code).slice(0,800)}`);
+                            // Text çıktıları (hata mesajları da buraya düşer)
+                            for (const _o of (item.outputs||[])) {
+                                if (_o.type === 'text' || _o.type === 'output_text') log(`[CODE] text output: ${String(_o.text||_o.output_text||'').slice(0,400)}`);
+                                if (_o.type === 'error' || _o.type === 'stderr') log(`[CODE] HATA output: ${String(_o.text||_o.message||'').slice(0,400)}`);
+                            }
 
                             // ── CONTENT-TYPE haritası (tüm yaygın tipler) ──────────────────────
                             const _EXT_CT_MAP = {
