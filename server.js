@@ -743,66 +743,91 @@ app.post("/run-agent", async (req, res) => {
             const _hasCodeInterpreter = (nativeToolDefs || []).some(t => t.type === 'code_interpreter');
             const fileInstruction = _hasCodeInterpreter
                 ? ((() => {
-                    // Her field için ASCII-safe dosya adı üret (Türkçe/özel karakter → container'da sorun çıkarır)
+                    // Her field için ASCII-safe dosya adı üret — field adının birebir ASCII versiyonu
                     const _toAsciiSafe = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[İıŞşÇçĞğÜüÖö]/g, c => ({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c)).replace(/[^a-zA-Z0-9_.-]/g,'_').toLowerCase();
-                    const fieldExamples = [...fileFieldsSet].map(k => `  • "${k}" → dosya adı: "${_toAsciiSafe(k)}.pdf" (veya .xlsx/.png — türüne göre)`).join('\n');
+                    // fieldExamples: her field için kesin dosya adı — platform eşleştirmeyi buna göre yapar
+                    const fieldExamples = [...fileFieldsSet].map(k => {
+                        const asciiName = _toAsciiSafe(k);
+                        // Uzantıyı field adından tahmin et (pdf/xlsx/png/docx içeriyorsa onu kullan)
+                        const extHint = /pdf/i.test(k) ? 'pdf' : /xlsx|excel/i.test(k) ? 'xlsx' : /docx|word/i.test(k) ? 'docx' : /csv/i.test(k) ? 'csv' : /gorsel|image|foto|resim|photo|img|png|jpg/i.test(k) ? 'png' : 'pdf';
+                        return `  • Field: "${k}"  →  ZORUNLU dosya adi: "/tmp/${asciiName}.${extHint}"  (baskasi KABUL EDILMEZ)`;
+                    }).join('\n');
                     return `[DOSYA CIKTISI KURALI — CODE INTERPRETER]
-Bu gorevin asagidaki field'lari dosya ciktisi icin ayrilmistir:
-${fileFieldList}
-
-== ZORUNLU DOSYA ADI KURALLARI ==
-Dosya adinda Turkce veya ozel karakter KESINLIKLE KULLANMA.
-  Yanlis: "ihtar_dilekce_si_pdf.pdf"  (c-cedilla iceriyor)
-  Dogru:  "ihtar_dilekce_pdf.pdf"     (tamamen ASCII)
-Bosluk karakteri yerine alt cizgi (_) kullan.
-
-Her field icin onerilen ASCII dosya adi:
+Bu gorevin uretmesi gereken dosya field'lari ve ZORUNLU dosya adlari:
 ${fieldExamples}
 
-== ZORUNLU PDF URETIM YAKLAŞIMI ==
-PDF ureteceksen MUTLAKA fpdf2 kullan. reportlab KULLANMA (DejaVu font hatasi riski).
+!! KRITIK: Dosya adi yukarida belirtilen BIREBIR olmak zorunda !!
+Platform, dosyayi field ile eslestirmek icin dosya adini kullanir.
+Farkli bir ad kullanirsaniz dosya KAYBEDILIR ve ilgili field bos kalir.
 
-# Calistirilabilir ornek — bu kodu baz al:
-from fpdf import FPDF
+== DOSYA ADI KURALLARI ==
+- Turkce/ozel karakter KULLANMA: ihtar_dilekcesi degil ihtar_dilekce_si (ama zaten yukaridaki adlar hazir)
+- /tmp/ altina yaz: /tmp/field_adi.uzanti
+
+== ZORUNLU PDF URETIM YAKLAŞIMI ==
+PDF ureteceksen asagidaki yontemi BIREBIR kullan.
+fpdf2 KULLANMA (yuklu olmayabilir). reportlab kullan ama TTFont / DejaVu KAYDETME.
+Helvetica standart PDF fontu — hicbir font dosyasina ihtiyac duymaz.
+
+# --- BIREBIR BU YAPIDA KOD YAZ ---
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import cm
 
 def to_ascii(text):
-    # Turkce harf → ASCII donusum tablosu
-    tr = {
-        'İ':'I', 'ı':'i',
-        'Ş':'S', 'ş':'s',
-        'Ç':'C', 'ç':'c',
-        'Ğ':'G', 'ğ':'g',
-        'Ü':'U', 'ü':'u',
-        'Ö':'O', 'ö':'o'
-    }
-    result = ''
-    for ch in str(text):
-        result += tr.get(ch, ch)
-    return result
+    tr = {'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}
+    return ''.join(tr.get(c, c) for c in str(text))
 
-pdf = FPDF()
-pdf.add_page()
-pdf.set_font('Helvetica', size=11)
-# Metni ASCII'ye cevir, sonra yaz:
-for line in content_lines:
-    pdf.cell(0, 8, to_ascii(line), new_x='LMARGIN', new_y='NEXT')
 out_path = '/tmp/ihtar_dilekce.pdf'
-pdf.output(out_path)
-print(f'DOSYA_OK:{out_path}')
+c = canvas.Canvas(out_path, pagesize=A4)
+W, H = A4
+margin = 2.5 * cm
+y = H - margin
+line_h = 14
+
+c.setFont('Helvetica-Bold', 13)
+c.drawString(margin, y, to_ascii('IHTARNAME'))
+y -= line_h * 2
+
+c.setFont('Helvetica', 11)
+satirlar = [
+    to_ascii('Muhatap: ...'),
+    to_ascii('Konu: ...'),
+    '',
+    to_ascii('Detay metni buraya...'),
+]
+for satir in satirlar:
+    if y < margin + line_h:
+        c.showPage()
+        c.setFont('Helvetica', 11)
+        y = H - margin
+    c.drawString(margin, y, satir)
+    y -= line_h
+
+c.save()
+# --- KOD SONU ---
+
+Uzun metinleri otomatik satirlara bol:
+from reportlab.lib.utils import simpleSplit
+for paragraf in paragraflar:
+    satirlar = simpleSplit(to_ascii(paragraf), 'Helvetica', 11, W - 2 * margin)
+    for satir in satirlar:
+        if y < margin + line_h:
+            c.showPage(); c.setFont('Helvetica', 11); y = H - margin
+        c.drawString(margin, y, satir)
+        y -= line_h
 
 == ZORUNLU KURALLAR ==
-1. Dosyayi MUTLAKA /tmp/ altina yaz: /tmp/dosya_adi.pdf
-2. Yazdiktan sonra MUTLAKA su satirı yazdir: print(f"DOSYA_OK:/tmp/dosya_adi.pdf")
-3. try/except kullaniyorsan exception KESINLIKLE YUTMA — su sekilde yaz:
+1. Dosyayi MUTLAKA /tmp/ altina yaz
+2. c.save() cagrisini YAPTIKTAN SONRA devam et — kaydetmeden bitmez
+3. try/except kullaniyorsan exception YUTMA:
    try:
        ...pdf uret...
+       c.save()
    except Exception as e:
-       import traceback
-       print(f"HATA: {e}")
-       traceback.print_exc()
-       raise
-4. reportlab KULLANMA — fpdf2 kullan
-5. JSON ciktisina dosya field'ini EKLEME — platform dosyayi code_interpreter ciktisinda otomatik okur
+       import traceback; traceback.print_exc(); raise
+4. TTFont / registerFont / DejaVu KULLANMA
+5. JSON ciktisina dosya field'ini EKLEME — platform dosyayi otomatik okur
 6. JSON ciktisinda yalnizca non-file field'lari dondur`;
                   })())
                 : `[DOSYA ÇIKTISI KURALI — FILE PAYLOAD SİSTEMİ]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir (image_pdf tipi):\n${fileFieldList}\n\nBu field'lar json_schema'ya dahil edilmemiştir — yine de JSON çıktında şu formatlarda ekle:\n  - Base64: "data:image/png;base64,..." veya ham base64 string\n  - Doğrudan URL: "https://..."\nBu field'lar için herhangi bir upload tool ÇAĞIRMA — platform dosyayı otomatik yükler.\nDiğer JSON field'larınla birlikte aynı obje içinde bulunmalı.`;
@@ -811,6 +836,61 @@ print(f'DOSYA_OK:{out_path}')
                 content: fileInstruction
             });
             log(`[FILE-FIELDS] ${fileFieldsSet.size} dosya field talimatı mesaja eklendi: ${[...fileFieldsSet].join(', ')}`);
+
+            // ── Çoklu file field varsa: image_generation + tool call için ek talimat ──────────────
+            // Bu blok SADECE birden fazla file field olduğunda eklenir.
+            // Tek field senaryosunda gerek yok — sistem zaten o field'ı kullanır.
+            if (fileFieldsSet.size > 1) {
+                const _toAsciiSafeExtra = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g,'')
+                    .replace(/[İıŞşÇçĞğÜüÖö]/g, c => ({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c))
+                    .replace(/[^a-zA-Z0-9_.-]/g,'_').toLowerCase();
+
+                // image_generation için: hangi field'lerin görsel olduğunu tespit et
+                const _imgFields = [...fileFieldsSet].filter(k =>
+                    /gorsel|image|foto|resim|photo|img|png|jpg|visual|picture/i.test(k)
+                );
+                // tool call (URL/base64 dönen) için: tüm file field'lar geçerli
+                const _allFileFieldsList = [...fileFieldsSet].map(k =>
+                    `  • "${k}"  →  JSON anahtarı BIREBIR: "${k}"`
+                ).join('\n');
+
+                let _multiFileInstruction = `[COKLU DOSYA FIELD KURALI — KRITIK]
+Bu gorevde ${fileFieldsSet.size} adet dosya field'i var. Her dosya DOGRU field'a eslestirilmek zorunda.
+
+`;
+                // image_generation talimatı — image field'ları varsa ekle
+                if (_imgFields.length > 0) {
+                    const _imgFieldPromptExamples = _imgFields.map(k =>
+                        `  • "${k}" icin gorsel ureteceksen prompt'un BASINA BIREBIR su etiketi koy: [FIELD:${k}]`
+                    ).join('\n');
+                    _multiFileInstruction += `== IMAGE GENERATION — ZORUNLU ETIKET KURALI ==
+image_generation tool'unu kullanirken prompt'un basina [FIELD:field_adi] etiketi EKLEMEK ZORUNDASIN.
+Platform bu etiketi okuyarak gorseli dogru field'a atar.
+
+${_imgFieldPromptExamples}
+
+Ornek dogru prompt: "[FIELD:${_imgFields[0]}] Profesyonel bir belge gorseli..."
+Ornek yanlis prompt: "Profesyonel bir belge gorseli..."  ← field bilinmez, yanlis atanir
+
+`;
+                }
+
+                // tool call / URL talimatı — her zaman ekle
+                _multiFileInstruction += `== TOOL CALL / URL SONUCU — ZORUNLU JSON KURALI ==
+Bir tool cagrisindan dosya URL'si veya base64 alirsan, JSON ciktisina BIREBIR field adi ile ekle:
+${_allFileFieldsList}
+
+Ornek dogru: { "${[...fileFieldsSet][0]}": "https://example.com/dosya.pdf" }
+Ornek yanlis: { "file": "https://..." }  ← "file" field adi degil, sistem bulamaz
+
+Dosya olmayan field'lar icin normal JSON formatini kullan.`;
+
+                chatParams.messages.splice(insertIdx + 1, 0, {
+                    role: "user",
+                    content: _multiFileInstruction
+                });
+                log(`[FILE-FIELDS] Çoklu field talimatı eklendi (${fileFieldsSet.size} field, ${_imgFields.length} image field)`);
+            }
         }
 
         // -------------------------
@@ -1022,14 +1102,73 @@ print(f'DOSYA_OK:{out_path}')
                             // image_generation tool output — base64 PNG
                             // NOT: filepayload sistemi — sadece image değil, tüm dosya türleri bu yapıyla işlenir
                             if (item.result) {
+                                // Tüm item alanlarını logla — prompt/input field'ını görmek için
+                                const _imgItemKeys = Object.keys(item).filter(k => k !== 'result');
+                                log(`[AI-IMG] image_generation_call item alanları: ${JSON.stringify(Object.fromEntries(_imgItemKeys.map(k=>[k, typeof item[k]==='string'?item[k].slice(0,200):item[k]])))}`);
                                 log(`[AI-IMG] image_generation_call yakalandı (base64 ${item.result.length} karakter)`);
-                                const _imgFieldName = "ai_generated_image";
+
+                                const _toNormImg = (s) => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'')
+                                    .replace(/[İıŞşÇçĞğÜüÖö]/g,c=>({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c))
+                                    .toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+
+                                // ── Strateji 1: prompt başında [FIELD:field_adı] etiketi var mı? ──
+                                // Talimatla AI'a söylüyoruz: birden fazla file field varsa prompt'un başına [FIELD:xxx] koy
+                                const _imgPromptRaw = String(item.prompt || item.input || item.parameters?.prompt || item.query || '');
+                                const _imgFieldTagMatch = _imgPromptRaw.match(/^\[FIELD:([^\]]+)\]/i);
+                                let _imgFieldName = null;
+
+                                if (_imgFieldTagMatch) {
+                                    // Prompt'tan gelen field adını normalize et ve fileFieldsSet ile eşleştir
+                                    const _taggedField = _imgFieldTagMatch[1].trim();
+                                    log(`[AI-IMG] [FIELD:] etiketi bulundu: "${_taggedField}"`);
+                                    // Exact match önce
+                                    if (fileFieldsSet.has(_taggedField)) {
+                                        _imgFieldName = _taggedField;
+                                    } else {
+                                        // Normalize karşılaştırma
+                                        const _tn = _toNormImg(_taggedField);
+                                        for (const k of fileFieldsSet) {
+                                            if (_toNormImg(k) === _tn) { _imgFieldName = k; break; }
+                                        }
+                                    }
+                                    if (!_imgFieldName) log(`[AI-IMG] ⚠️ [FIELD:${_taggedField}] etiketli field fileFieldsSet'te bulunamadı — fallback'e geçiliyor`);
+                                }
+
+                                // ── Strateji 2: Prompt içinde field adı geçiyor mu? ──
+                                if (!_imgFieldName && _imgPromptRaw && fileFieldsSet.size > 0) {
+                                    for (const k of fileFieldsSet) {
+                                        if (_imgPromptRaw.toLowerCase().includes(_toNormImg(k).replace(/_/g,' ')) ||
+                                            _imgPromptRaw.toLowerCase().includes(_toNormImg(k))) {
+                                            _imgFieldName = k;
+                                            log(`[AI-IMG] Strateji-2: prompt içinde field adı bulundu → "${k}"`);
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                // ── Strateji 3: image/gorsel keyword eşleşmesi ──
+                                if (!_imgFieldName && fileFieldsSet.size > 0) {
+                                    const _imgKws = ['image','img','gorsel','foto','resim','photo','picture','visual'];
+                                    for (const k of fileFieldsSet) {
+                                        const kn = _toNormImg(k);
+                                        if (_imgKws.some(kw => kn.includes(kw))) { _imgFieldName = k; break; }
+                                    }
+                                    if (_imgFieldName) log(`[AI-IMG] Strateji-3: keyword eşleşmesi → "${_imgFieldName}"`);
+                                }
+
+                                // ── Strateji 4: tek field varsa o, yoksa ilk field ──
+                                if (!_imgFieldName) {
+                                    _imgFieldName = [...fileFieldsSet][0] || "ai_generated_image";
+                                    log(`[AI-IMG] Strateji-4: fallback → "${_imgFieldName}"${fileFieldsSet.size > 1 ? ' ⚠️ (birden fazla field var, eşleşme belirsiz)' : ''}`);
+                                }
+
                                 const _imgMeta = fileFieldsMeta.get(_imgFieldName) || {};
+                                log(`[AI-IMG] → field="${_imgFieldName}" cfId="${_imgMeta.customFieldId || 'YOK'}"`);
                                 generatedPhotosArray.push({
                                     customFieldName: _imgFieldName,
                                     customFieldId: _imgMeta.customFieldId || "",
                                     photoId: _imgMeta.photoId || "",
-                                    newFiles: [{ base64: item.result, filename: "ai_generated_image.png", contentType: "image/png" }],
+                                    newFiles: [{ base64: item.result, filename: `${_toNormImg(_imgFieldName)}.png`, contentType: "image/png" }],
                                     newUrls: [], keptUrls: [], removedUrls: []
                                 });
                             }
@@ -1077,7 +1216,20 @@ print(f'DOSYA_OK:{out_path}')
                                         const _cfCtMapLocal = {pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',xls:'application/vnd.ms-excel',csv:'text/csv',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',doc:'application/msword',txt:'text/plain',zip:'application/zip'};
                                         const _cfExt = (_cfName||'').split('.').pop().toLowerCase();
                                         const _cfCt = _cfCtMapLocal[_cfExt] || 'application/octet-stream';
-                                        const _cfField = (() => { for (const k of fileFieldsSet) { const kn=_toNorm(k),bn=_toNorm((_cfName||'').replace(/\.[^.]+$/,'')); if(kn===bn||bn.includes(kn)||kn.includes(bn)) return k; } return fileFieldsSet.size===1?[...fileFieldsSet][0]:'code_interpreter_file'; })();
+                                        // Field eşleştirme: dosya adı (uzantısız) → fileFieldsSet karşılaştırması
+                                        const _cfBaseName = _toNorm((_cfName||'').replace(/\.[^.]+$/, ''));
+                                        let _cfField = null;
+                                        for (const k of fileFieldsSet) {
+                                            const kn = _toNorm(k);
+                                            if (kn === _cfBaseName || _cfBaseName.includes(kn) || kn.includes(_cfBaseName)) { _cfField = k; break; }
+                                        }
+                                        if (!_cfField && fileFieldsSet.size === 1) _cfField = [...fileFieldsSet][0];
+                                        if (!_cfField) {
+                                            log(`[CODE] ⚠️ EŞLEŞME BULUNAMADI: "${_cfName}" → fileFieldsSet: [${[...fileFieldsSet].join(', ')}] — dosya KAYBEDILECEK. AI talimatı ihlal etti: field adını kullanmadı.`);
+                                            return false;
+                                        }
+                                        log(`[CODE] field eşleşti: "${_cfName}" → "${_cfField}"`);
+                                        const _cfMeta = fileFieldsMeta.get(_cfField) || {};
                                         const _cfMeta = fileFieldsMeta.get(_cfField) || {};
                                         // Önce openai.files.content() dene
                                         let _cfBuf = null;
@@ -1211,7 +1363,11 @@ print(f'DOSYA_OK:{out_path}')
                                     const buf = await _downloadFileById(fid);
                                     const b64 = buf.toString('base64');
                                     const ct = _extToContentType(fname);
-                                    const targetField = _matchFileField(fname) || "code_interpreter_file";
+                                    const targetField = _matchFileField(fname);
+                                    if (!targetField) {
+                                        log(`[CODE] ⚠️ EŞLEŞME BULUNAMADI: "${fname}" → fileFieldsSet: [${[...fileFieldsSet].join(', ')}] — AI field adını kullanmadı, dosya KAYBEDILDI.`);
+                                        continue;
+                                    }
                                     // Schema'dan gelen metadata — customFieldId + photoId
                                     const _fMeta = fileFieldsMeta.get(targetField) || {};
                                     log(`[CODE] file indirildi: ${fname} (${buf.length} byte, ${ct}) → field "${targetField}"${_fMeta.customFieldId ? ` cfId=${_fMeta.customFieldId}` : ""}${_fMeta.photoId ? ` photoId=${_fMeta.photoId}` : ""}`);
@@ -1624,7 +1780,7 @@ print(f'DOSYA_OK:{out_path}')
             // "filepayload" — image, PDF ve tüm dosya türleri için.
             // {items:[...]} formatı photoBackend'in beklediği yapıdır.
             // Her item: {customFieldName, newFiles:[{base64,filename,contentType}], newUrls:[], keptUrls:[], removedUrls:[]}
-            photopayload: generatedPhotosArray.length > 0 ? JSON.stringify({ items: generatedPhotosArray }) : "",
+            photopayload: generatedPhotosArray.length > 0 ? JSON.stringify({ items: generatedPhotosArray }) : null,
             configuration_notes_to_myself: finalConfigNotes,    // null = DB güncellenmez, string = yeni not
             // notes_to_user: final_json içinde geliyor — form elementi handle eder
             error_message: "",
