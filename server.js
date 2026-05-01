@@ -561,103 +561,136 @@ app.post("/run-agent", async (req, res) => {
             if (!schemaStr.startsWith("{") && !schemaStr.startsWith("[")) {
                 schemaStr = `{\n${schemaStr}\n}`;
             }
-            // Unescaped newline/CR karakterleri JSON.parse'ı kırıyor, temizle
-            schemaStr = schemaStr.replace(/[\r\n]+/g, ' ');
+
+            // ── Schema string sanitizasyonu (parse'dan önce) ─────────────────────────────
+            // Unescaped newline/CR karakterleri JSON.parse'ı kırıyor
+            schemaStr = schemaStr.replace(/[\r\n\t]+/g, ' ');
+            // String içindeki kontrol karakterleri
+            schemaStr = schemaStr.replace(/[\x00-\x1F\x7F]/g, ' ');
+            // Trailing comma — sık yapılan hata: {a:1, b:2,}  veya [1,2,]
+            schemaStr = schemaStr.replace(/,\s*([}\]])/g, '$1');
+            // Tek tırnak → çift tırnak (bazı kullanıcılar böyle gönderebilir)
+            // Dikkat: sadece key/value sınırlarında çevir, diğer karakterlere dokunma
+            if (!schemaStr.includes('"') && schemaStr.includes("'")) {
+                schemaStr = schemaStr.replace(/'/g, '"');
+            }
+
+            // ── Gaia internal key'ler — bunlar file field metadata, OpenAI'ya GİTMEMELİ ──
+            // schema parse'dan önce ve sonra iki kez temizlenir
+            const _GAIA_META_KEYS = new Set(['customFieldId','customfield_id','bubble_field_id','fieldId','photoId','photo_id','photoRecordId','record_id']);
+
+            // ── Regex ile file field tespiti — parse başarısız olunca fallback olarak kullanılır ──
+            // "fieldName": { ... "type": "file" ... } veya "type": ["file", "null"] ...
+            const _extractFileFieldsFromString = (str) => {
+                // Her property bloğunu yakalamak için basit regex — nested object'leri tam yakalamaz
+                // ama tek seviyeli {type, customFieldId, photoId} bloğu için yeterli
+                const rx = /"([^"]+)"\s*:\s*\{([^{}]*)\}/g;
+                let m;
+                while ((m = rx.exec(str)) !== null) {
+                    const fieldName = m[1];
+                    const body = m[2];
+                    // "type": "file" veya "type": ["...","file"...] içeriyorsa file field
+                    const isFile = /"type"\s*:\s*(?:"file"|\[[^\]]*"file"[^\]]*\])/.test(body);
+                    if (!isFile) continue;
+                    const cfMatch = body.match(/"customFieldId"\s*:\s*"([^"]+)"/);
+                    const pidMatch = body.match(/"photoId"\s*:\s*"([^"]+)"/);
+                    fileFieldsSet.add(fieldName);
+                    fileFieldsMeta.set(fieldName, {
+                        customFieldId: cfMatch ? cfMatch[1] : "",
+                        photoId: pidMatch ? pidMatch[1] : ""
+                    });
+                    log(`[FILE-FIELDS][regex] Tespit: "${fieldName}"${cfMatch ? ` cfi=${cfMatch[1]}` : ""}${pidMatch ? ` pid=${pidMatch[1]}` : ""}`);
+                }
+            };
+
+            // ── FILE FIELD TESPİT YARDIMCISI ─────────────────────────────────────────────
+            const _isFileType = (t) => {
+                if (!t) return false;
+                if (Array.isArray(t)) return t.some(x => String(x).toLowerCase() === 'file');
+                return String(t).toLowerCase() === 'file';
+            };
+
+            // ── OpenAI schema sanitizer ───────────────────────────────────────────────────
+            // • type array ["string","null"] → anyOf
+            // • type "file" → kaldır (zaten fileFieldsSet'e alındı)
+            // • Gaia internal key'ler (customFieldId, photoId vb.) → kaldır (OpenAI'ya gönderilmez)
+            const _sanitizeSchemaNode = (node) => {
+                if (!node || typeof node !== 'object' || Array.isArray(node)) return node;
+                const out = {};
+                for (const [key, val] of Object.entries(node)) {
+                    // Gaia internal key'ler — OpenAI'ya gönderme
+                    if (_GAIA_META_KEYS.has(key)) continue;
+                    if (key === 'type' && Array.isArray(val)) {
+                        const types = val.filter(t => typeof t === 'string' && t !== 'file');
+                        if (types.length === 0)       { out['type'] = 'string'; }
+                        else if (types.length === 1)  { out['type'] = types[0]; }
+                        else { out['anyOf'] = types.map(t => ({ type: t })); continue; }
+                    } else if (key === 'properties' && val && typeof val === 'object') {
+                        out[key] = {};
+                        for (const [pk, pv] of Object.entries(val)) out[key][pk] = _sanitizeSchemaNode(pv);
+                    } else if (key === 'items' && val && typeof val === 'object') {
+                        out[key] = _sanitizeSchemaNode(val);
+                    } else {
+                        out[key] = val;
+                    }
+                }
+                return out;
+            };
 
             let schemaObj = null;
-            try { schemaObj = JSON.parse(schemaStr); } catch(e) { log("UYARI: json_schema parse edilemedi, json_object moduna düşüldü. Hata: " + e.message); }
+            let schemaParseOk = false;
+            try {
+                schemaObj = JSON.parse(schemaStr);
+                schemaParseOk = true;
+            } catch(e) {
+                // Hata pozisyonunu logla — kullanıcı schema'sındaki sorunu tespit etmek için
+                log(`UYARI: json_schema parse edilemedi (hata: ${e.message}) — regex fallback ile file field'lar kurtarılıyor`);
+                log(`[SCHEMA-DEBUG] Parse hatası yakınındaki içerik: ...${schemaStr.slice(Math.max(0, (e.message.match(/position (\d+)/)?.[1]|0) - 20), (+(e.message.match(/position (\d+)/)?.[1]||0)) + 30)}...`);
+                log(`[SCHEMA-DEBUG] İlk 300 char: ${schemaStr.slice(0, 300)}`);
+                // Parse başarısız olsa bile file field'ları regex ile tespit et
+                _extractFileFieldsFromString(schemaStr);
+            }
 
             if (schemaObj) {
                 // FORMAT DETECT: Düz properties map mi, yoksa tam schema objesi mi?
-                // Format A (düz): {"field1": {"type":"string"}, "file_out": {"type":"file"}, "required": [...]}
-                // Format B (tam):  {"type":"object", "properties": {...}, "required": [...]}
+                // Format A (düz): {"field1": {"type":"string"}, "file_out": {"type":"file"}}
+                // Format B (tam): {"type":"object", "properties": {...}, "required": [...]}
                 let rawProperties = schemaObj;
                 let rawRequired   = null;
 
                 if (schemaObj.type === 'object' && schemaObj.properties && typeof schemaObj.properties === 'object') {
-                    // Format B — tam JSON Schema
                     rawProperties = schemaObj.properties;
                     rawRequired   = Array.isArray(schemaObj.required) ? schemaObj.required : null;
                 } else if (Array.isArray(schemaObj.required)) {
-                    // Format A — düz map ama "required" key'i var
                     rawRequired   = schemaObj.required;
                     const { required: _r, ...rest } = schemaObj;
                     rawProperties = rest;
                 }
 
-                // FILE FIELD TESPİTİ: type:"file" olan key'leri ayır, schema'dan ve required'dan temizle
-                // Desteklenen formatlar:
-                //   "type": "file"              → tek string
-                //   "type": ["file", "null"]    → nullable array (AI'ın ürettiği format)
-                //   "type": ["string","file"]   → mix array
-                const _isFileType = (t) => {
-                    if (!t) return false;
-                    if (Array.isArray(t)) return t.some(x => String(x).toLowerCase() === 'file');
-                    return String(t).toLowerCase() === 'file';
-                };
+                // FILE FIELD TESPİTİ + schema'dan ayır
                 const cleanSchemaObj = {};
                 for (const [k, v] of Object.entries(rawProperties)) {
                     if (v && typeof v === 'object' && _isFileType(v.type)) {
                         fileFieldsSet.add(k);
-                        // customFieldId: Bubble'daki custom field UUID (customFieldMapJson gerektirmez)
-                        // photoId: varolan Photo kaydı ID'si (update senaryosu — aynı field için yeni Photo yaratılmaz)
                         const _cfi = String(v.customFieldId || v.customfield_id || v.bubble_field_id || v.fieldId || "").trim();
                         const _pid = String(v.photoId || v.photo_id || v.photoRecordId || v.record_id || "").trim();
                         fileFieldsMeta.set(k, { customFieldId: _cfi, photoId: _pid });
-                        log(`[FILE-FIELDS] Schema'dan tespit: "${k}" (type=${JSON.stringify(v.type)})${_cfi ? ` customFieldId=${_cfi}` : ""}${_pid ? ` photoId=${_pid}` : ""} → file payload'a yönlendirilecek`);
+                        log(`[FILE-FIELDS] Schema'dan tespit: "${k}"${_cfi ? ` cfi=${_cfi}` : ""}${_pid ? ` pid=${_pid}` : ""} → file payload'a yönlendirilecek`);
                     } else {
                         cleanSchemaObj[k] = v;
                     }
                 }
 
-                // required array'den de file field'larını çıkar
-                const cleanRequired = rawRequired
-                    ? rawRequired.filter(k => !fileFieldsSet.has(k))
-                    : null;
+                const cleanRequired = rawRequired ? rawRequired.filter(k => !fileFieldsSet.has(k)) : null;
 
                 if (fileFieldsSet.size > 0) {
-                    log(`[FILE-FIELDS] Toplam ${fileFieldsSet.size} dosya field'ı schema'dan ayrıldı: ${[...fileFieldsSet].join(', ')}`);
-                    if (rawRequired) log(`[FILE-FIELDS] required array temizlendi: [${rawRequired.join(',')}] → [${(cleanRequired||[]).join(',')}]`);
+                    log(`[FILE-FIELDS] Toplam ${fileFieldsSet.size} file field ayrıldı: ${[...fileFieldsSet].join(', ')}`);
+                    if (rawRequired) log(`[FILE-FIELDS] required temizlendi: [${rawRequired.join(',')}] → [${(cleanRequired||[]).join(',')}]`);
                 }
 
-                // Temiz schema objesi — required sadece dolu ise eklenir
                 const finalSchema = { type: "object", properties: cleanSchemaObj };
                 if (cleanRequired && cleanRequired.length > 0) finalSchema.required = cleanRequired;
 
-                // OpenAI schema sanitizer — Responses API'nin kabul etmediği formatları düzelt:
-                //   • type array ["string","null"] → anyOf: [{type:"string"},{type:"null"}]
-                //   • type array ["null"] veya boş → type:"string" (fallback)
-                //   • unknown type ("file" vb.) zaten yukarıda çıkarıldı
-                const _sanitizeSchemaNode = (node) => {
-                    if (!node || typeof node !== 'object' || Array.isArray(node)) return node;
-                    const out = {};
-                    for (const [key, val] of Object.entries(node)) {
-                        if (key === 'type' && Array.isArray(val)) {
-                            // Array type → anyOf dönüştür
-                            const types = val.filter(t => typeof t === 'string' && t !== 'file');
-                            if (types.length === 0) {
-                                out['type'] = 'string'; // tamamen boş kaldıysa fallback
-                            } else if (types.length === 1) {
-                                out['type'] = types[0]; // tek eleman → düz string
-                            } else {
-                                // Birden fazla tip → anyOf
-                                out['anyOf'] = types.map(t => ({ type: t }));
-                                // 'type' key'ini EKLEME — anyOf ile çakışır
-                                continue;
-                            }
-                        } else if (key === 'properties' && val && typeof val === 'object') {
-                            out[key] = {};
-                            for (const [pk, pv] of Object.entries(val)) {
-                                out[key][pk] = _sanitizeSchemaNode(pv);
-                            }
-                        } else if (key === 'items' && val && typeof val === 'object') {
-                            out[key] = _sanitizeSchemaNode(val);
-                        } else {
-                            out[key] = val;
-                        }
-                    }
-                    return out;
-                };
                 const sanitizedSchema = _sanitizeSchemaNode(finalSchema);
 
                 chatParams.response_format = {
@@ -669,10 +702,14 @@ app.post("/run-agent", async (req, res) => {
                     }
                 };
             } else {
-                // Fallback: json_object - Responses API "json" kelimesini mesajda zorunlu kılıyor
+                // Schema parse edilemedi — json_object moduna düş
+                // fileFieldsSet yukarıdaki regex fallback'te doldurulmuş olabilir
                 chatParams.response_format = { type: "json_object" };
                 if (chatParams.messages.length > 0 && chatParams.messages[0].role === "system") {
                     chatParams.messages[0].content += "\n\nRespond using JSON format only.";
+                }
+                if (fileFieldsSet.size > 0) {
+                    log(`[FILE-FIELDS] json_object modunda ${fileFieldsSet.size} file field regex ile kurtarıldı: ${[...fileFieldsSet].join(', ')}`);
                 }
             }
         }
