@@ -2,6 +2,27 @@ const express = require("express");
 const { OpenAI } = require("openai");
 const composioLib = require("composio-core");
 const axios = require("axios");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UNICODE SLUG — evrensel, dil bağımsız ASCII dönüşümü
+// Yaklaşım: NFD decompose → combining diacritic'leri sil → kalan non-ASCII temizle
+// Tüm Latin türevleri (Türkçe, Fransızca, Almanca, İspanyolca vb.) desteklenir.
+// NOT: ı (U+0131, dotless-i) NFD ile ayrışmaz — tek özel case olarak önceden dönüştürülür.
+// ─────────────────────────────────────────────────────────────────────────────
+function _slugify(s, { sep = '_', keepDot = false } = {}) {
+    const safe = String(s || '')
+        .replace(/ı/g, 'i')                     // tek NFD-resistant Türkçe karakter
+        .normalize('NFD')                        // é→e+accent, ş→s+cedilla, ü→u+umlaut vb.
+        .replace(/[̀-ͯ]/g, '')         // combining diacritic'leri sil
+        .replace(/[^\x00-\x7F]/g, sep)           // kalan non-ASCII → sep
+        .replace(/\s+/g, sep)
+        .toLowerCase()
+        .replace(keepDot ? /[^a-z0-9_.-]+/g : /[^a-z0-9_]+/g, sep)
+        .replace(new RegExp(`${sep}+`, 'g'), sep)
+        .replace(new RegExp(`^${sep}|${sep}$`, 'g'), '');
+    return safe || 'file';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // GAIA NATIVE TOOLS (inline)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -743,8 +764,8 @@ app.post("/run-agent", async (req, res) => {
             const _hasCodeInterpreter = (nativeToolDefs || []).some(t => t.type === 'code_interpreter');
             const fileInstruction = _hasCodeInterpreter
                 ? ((() => {
-                    // Her field için ASCII-safe dosya adı üret — field adının birebir ASCII versiyonu
-                    const _toAsciiSafe = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[İıŞşÇçĞğÜüÖö]/g, c => ({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c)).replace(/[^a-zA-Z0-9_.-]/g,'_').toLowerCase();
+                    // Her field için ASCII-safe dosya adı üret — _slugify (modül seviyesinde tanımlı)
+                    const _toAsciiSafe = (s) => _slugify(s, { keepDot: true });
                     // fieldExamples: her field için kesin dosya adı — platform eşleştirmeyi buna göre yapar
                     const fieldExamples = [...fileFieldsSet].map(k => {
                         const asciiName = _toAsciiSafe(k);
@@ -777,10 +798,13 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 from reportlab.lib.utils import simpleSplit
 
+import unicodedata
 def to_ascii(text):
-    # Turkce → ASCII (bu fonksiyon olmadan PDF olusturulamaz)
-    tr = {'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}
-    return ''.join(tr.get(c, c) for c in str(text))
+    # Evrensel yaklasim — tum dillerde calisir, harici kutuphane gerektirmez
+    # ı (U+0131) NFD ile ayrismiyor, tek ozel case olarak onceden donusturuluyor
+    s = str(text).replace('ı', 'i')
+    nfd = unicodedata.normalize('NFD', s)
+    return ''.join(c for c in nfd if not unicodedata.combining(c) and ord(c) < 128)
 
 # DEGISKEN TANIMLARKEN to_ascii KULLAN — sonra degil, burada:
 davaci_ad   = to_ascii("...")   # ← to_ascii burada
@@ -835,9 +859,7 @@ c.save()
             // Bu blok SADECE birden fazla file field olduğunda eklenir.
             // Tek field senaryosunda gerek yok — sistem zaten o field'ı kullanır.
             if (fileFieldsSet.size > 1) {
-                const _toAsciiSafeExtra = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g,'')
-                    .replace(/[İıŞşÇçĞğÜüÖö]/g, c => ({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c))
-                    .replace(/[^a-zA-Z0-9_.-]/g,'_').toLowerCase();
+                const _toAsciiSafeExtra = (s) => _slugify(s, { keepDot: true });
 
                 // image_generation için: hangi field'lerin görsel olduğunu tespit et
                 const _imgFields = [...fileFieldsSet].filter(k =>
@@ -1101,9 +1123,7 @@ Dosya olmayan field'lar icin normal JSON formatini kullan.`;
                                 log(`[AI-IMG] image_generation_call item alanları: ${JSON.stringify(Object.fromEntries(_imgItemKeys.map(k=>[k, typeof item[k]==='string'?item[k].slice(0,200):item[k]])))}`);
                                 log(`[AI-IMG] image_generation_call yakalandı (base64 ${item.result.length} karakter)`);
 
-                                const _toNormImg = (s) => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'')
-                                    .replace(/[İıŞşÇçĞğÜüÖö]/g,c=>({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c))
-                                    .toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+                                const _toNormImg = (s) => _slugify(s);
 
                                 // ── Strateji 1: prompt başında [FIELD:field_adı] etiketi var mı? ──
                                 // Talimatla AI'a söylüyoruz: birden fazla file field varsa prompt'un başına [FIELD:xxx] koy
@@ -1322,10 +1342,8 @@ Dosya olmayan field'lar icin normal JSON formatini kullan.`;
                             // Dosya adından fileFieldsSet field key'i bul
                             // Kural: dosya adı (uzantısız) field adıyla eşleşiyorsa o field'a at
                             //        eşleşme yoksa tek file field varsa onu kullan, yoksa generic
-                            // Türkçe/özel karakter normalize et — AI ASCII-safe dosya adı kullanabilir
-                            const _toNorm = (s) => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'')
-                                .replace(/[İıŞşÇçĞğÜüÖö]/g,c=>({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c))
-                                .toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+                            // Unicode slug — evrensel, dil bağımsız
+                            const _toNorm = (s) => _slugify(s);
                             const _matchFileField = (filename) => {
                                 const base = _toNorm((filename || '').replace(/\.[^.]+$/, ''));
                                 for (const k of fileFieldsSet) {
@@ -1803,9 +1821,12 @@ Dosya olmayan field'lar icin normal JSON formatini kullan.`;
                         if (!_fbText) { log(`[PDF-FALLBACK] "${fileField}" için kaynak text bulunamadı — atlanıyor`); continue; }
 
                         log(`[PDF-FALLBACK] "${fileField}" için Node.js PDF üretiliyor (${_fbText.length} karakter text)...`);
-                        // ASCII dönüşüm
-                        const _fbToAscii = (s) => String(s).replace(/[İıŞşÇçĞğÜüÖö]/g, c =>
-                            ({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c));
+                        // _fbToAscii: metin içeriği için (boşluk ve noktalama korunur, sadece non-ASCII temizlenir)
+                        const _fbToAscii = (s) => String(s||'')
+                            .replace(/ı/g, 'i').replace(/İ/g, 'I')
+                            .normalize('NFD')
+                            .replace(/[̀-ͯ]/g, '')
+                            .replace(/[^\x00-\x7F]/g, '');
 
                         // PDFKit ile basit PDF üret
                         const PDFDocument = (() => { try { return require('pdfkit'); } catch(_) { return null; } })();
@@ -1827,7 +1848,8 @@ Dosya olmayan field'lar icin normal JSON formatini kullan.`;
                             doc.end();
                         });
 
-                        const _fbFilename = fileField.replace(/[^a-zA-Z0-9_.-]/g,'_').toLowerCase() + '.pdf';
+                        const _fbFilename = _fbToAscii(fileField)
+                            .replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_.-]/g, '').replace(/_+/g,'_').replace(/^_|_$/g,'').toLowerCase() + '.pdf';
                         generatedPhotosArray.push({
                             customFieldName: fileField,
                             customFieldId: _fbMeta.customFieldId || '',
