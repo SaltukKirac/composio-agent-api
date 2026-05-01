@@ -1230,7 +1230,6 @@ Dosya olmayan field'lar icin normal JSON formatini kullan.`;
                                         }
                                         log(`[CODE] field eşleşti: "${_cfName}" → "${_cfField}"`);
                                         const _cfMeta = fileFieldsMeta.get(_cfField) || {};
-                                        const _cfMeta = fileFieldsMeta.get(_cfField) || {};
                                         // Önce openai.files.content() dene
                                         let _cfBuf = null;
                                         if (_cfId) {
