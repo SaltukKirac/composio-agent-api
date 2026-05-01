@@ -985,10 +985,48 @@ app.post("/run-agent", async (req, res) => {
                             log(`[CODE] code_interpreter_call çalıştı | outputs: ${JSON.stringify((item.outputs||[]).map(o=>o.type)).slice(0,200)}`);
                             // Çalışan kodu logla — outputs:[] durumunda debug için kritik
                             if (item.code) log(`[CODE] çalışan kod (ilk 2000): ${String(item.code).slice(0,2000)}`);
+                            // Tüm item alanlarını logla — container ID, status, vs. görmek için
+                            const _itemKeys = Object.keys(item).filter(k => k !== 'code' && k !== 'outputs');
+                            if (_itemKeys.length) log(`[CODE] item diğer alanlar: ${JSON.stringify(Object.fromEntries(_itemKeys.map(k=>[k, typeof item[k]==='string'?item[k].slice(0,100):item[k]])))}`);
+                            // response üst seviye alanlar — container_id gibi
+                            const _respTopKeys = Object.keys(response).filter(k=>!['output','usage'].includes(k));
+                            log(`[CODE] response üst alanlar: ${JSON.stringify(Object.fromEntries(_respTopKeys.map(k=>[k, typeof response[k]==='string'?response[k].slice(0,100):response[k]])))}`);
                             // Text çıktıları (hata mesajları da buraya düşer)
                             for (const _o of (item.outputs||[])) {
                                 if (_o.type === 'text' || _o.type === 'output_text') log(`[CODE] text output: ${String(_o.text||_o.output_text||'').slice(0,400)}`);
                                 if (_o.type === 'error' || _o.type === 'stderr') log(`[CODE] HATA output: ${String(_o.text||_o.message||'').slice(0,400)}`);
+                            }
+                            // Container dosya listesi — yeni API'de dosyalar item.outputs yerine container'da saklanıyor olabilir
+                            const _containerId = response.container?.id || response.container_id || item.container_id;
+                            if (_containerId) {
+                                log(`[CODE] container_id bulundu: ${_containerId} — container dosyaları listeleniyor...`);
+                                try {
+                                    // openai.beta.containers veya openai.containers API
+                                    const _containerFiles = await (openai.beta?.containers?.files?.list || openai.containers?.files?.list)?.call(openai.beta?.containers?.files || openai.containers?.files, _containerId) ?? null;
+                                    if (_containerFiles && _containerFiles.data) {
+                                        log(`[CODE] container dosya sayısı: ${_containerFiles.data.length}`);
+                                        for (const _cf of _containerFiles.data) {
+                                            log(`[CODE] container file: id=${_cf.id} name=${_cf.filename||_cf.name}`);
+                                            const _cfName = _cf.filename || _cf.name || (_cf.id + '.bin');
+                                            // container file indirme — openai.files.content() veya container files API
+                                            try {
+                                                const _cfResp = await openai.files.content(_cf.id);
+                                                let _cfBuf;
+                                                if (Buffer.isBuffer(_cfResp)) _cfBuf = _cfResp;
+                                                else if (_cfResp && typeof _cfResp.arrayBuffer === 'function') _cfBuf = Buffer.from(await _cfResp.arrayBuffer());
+                                                else if (_cfResp && _cfResp.body) { const _cc=[]; for await (const _ch of _cfResp.body) _cc.push(_ch); _cfBuf = Buffer.concat(_cc); }
+                                                else _cfBuf = Buffer.from(await _cfResp.text(), 'utf8');
+                                                const _cfExt = _cfName.split('.').pop().toLowerCase();
+                                                const _cfCtMap = {pdf:'application/pdf',png:'image/png',jpg:'image/jpeg',xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',csv:'text/csv',docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'};
+                                                const _cfCt = _cfCtMap[_cfExt] || 'application/octet-stream';
+                                                const _cfField = (() => { for (const k of fileFieldsSet) { const kn=_toNorm(k),bn=_toNorm(_cfName.replace(/\.[^.]+$/,'')); if(kn===bn||bn.includes(kn)||kn.includes(bn)) return k; } return fileFieldsSet.size===1?[...fileFieldsSet][0]:'code_interpreter_file'; })();
+                                                const _cfMeta = fileFieldsMeta.get(_cfField) || {};
+                                                log(`[CODE] container file indirildi: ${_cfName} (${_cfBuf.length} byte) → field "${_cfField}"`);
+                                                generatedPhotosArray.push({ customFieldName: _cfField, customFieldId: _cfMeta.customFieldId||'', photoId: _cfMeta.photoId||'', newFiles: [{ base64: _cfBuf.toString('base64'), filename: _cfName, contentType: _cfCt }], newUrls:[], keptUrls:[], removedUrls:[] });
+                                            } catch (_cfErr) { log(`[CODE] container file indirilemedi: ${_cfErr.message}`); }
+                                        }
+                                    }
+                                } catch (_clErr) { log(`[CODE] container files API hatası: ${_clErr.message}`); }
                             }
 
                             // ── CONTENT-TYPE haritası (tüm yaygın tipler) ──────────────────────
