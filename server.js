@@ -742,7 +742,12 @@ app.post("/run-agent", async (req, res) => {
             // code_interpreter kullanılıyor mu? (native tools listesinden tespit)
             const _hasCodeInterpreter = (nativeToolDefs || []).some(t => t.type === 'code_interpreter');
             const fileInstruction = _hasCodeInterpreter
-                ? `[DOSYA ÇIKTISI KURALI — CODE INTERPRETER]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir:\n${fileFieldList}\n\ncode_interpreter ile bu dosyaları üretirken:\n  • Dosya adını MUTLAKA field adıyla aynı yap (uzantı ekleyebilirsin). Örnek: "${[...fileFieldsSet][0]}.pdf"\n  • Dosya field'larını JSON çıktına EKLEME — platform dosyayı code_interpreter çıktısından otomatik okur ve ilgili alana kaydeder.\n  • JSON çıktında yalnızca non-file field'ları döndür.`
+                ? ((() => {
+                    // Her field için ASCII-safe dosya adı üret (Türkçe/özel karakter → container'da sorun çıkarır)
+                    const _toAsciiSafe = (s) => s.normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[İıŞşÇçĞğÜüÖö]/g, c => ({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c)).replace(/[^a-zA-Z0-9_.-]/g,'_').toLowerCase();
+                    const fieldExamples = [...fileFieldsSet].map(k => `  • "${k}" → dosya adı: "${_toAsciiSafe(k)}.pdf" (veya .xlsx/.png — türüne göre)`).join('\n');
+                    return `[DOSYA ÇIKTISI KURALI — CODE INTERPRETER]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir:\n${fileFieldList}\n\ncode_interpreter ile bu dosyaları üretirken:\n${fieldExamples}\n\nÖNEMLİ — Dosya adı kuralları:\n  • Dosya adında Türkçe veya özel karakter KULLANMA (container yakalayamaz)\n  • Türkçe harfleri ASCII'ye çevir: İ→I, Ş→S, Ç→C, Ğ→G, Ü→U, Ö→O, boşluk→_\n  • Örnek: "İhtar Dilekçesi PDF" → "ihtar_dilekçesi_pdf.pdf" DEĞİL → "ihtar_dilekce_pdf.pdf"\n  • Mümkünse /tmp/ klasörüne yaz: open('/tmp/dosya_adi.pdf', 'wb')\n  • PDF için fpdf2 veya reportlab kullanabilirsin; Türkçe karakter desteği için UTF-8 font kaydı şart\n  • Dosya field'larını JSON çıktına EKLEME — platform dosyayı code_interpreter çıktısından otomatik okur\n  • JSON çıktında yalnızca non-file field'ları döndür`;
+                  })())
                 : `[DOSYA ÇIKTISI KURALI — FILE PAYLOAD SİSTEMİ]\nBu görevin aşağıdaki field'ları dosya çıktısı içindir (image_pdf tipi):\n${fileFieldList}\n\nBu field'lar json_schema'ya dahil edilmemiştir — yine de JSON çıktında şu formatlarda ekle:\n  - Base64: "data:image/png;base64,..." veya ham base64 string\n  - Doğrudan URL: "https://..."\nBu field'lar için herhangi bir upload tool ÇAĞIRMA — platform dosyayı otomatik yükler.\nDiğer JSON field'larınla birlikte aynı obje içinde bulunmalı.`;
             chatParams.messages.splice(insertIdx, 0, {
                 role: "user",
@@ -979,7 +984,7 @@ app.post("/run-agent", async (req, res) => {
                             // Responses API farklı output type ismi kullanabilir — hepsini yakala
                             log(`[CODE] code_interpreter_call çalıştı | outputs: ${JSON.stringify((item.outputs||[]).map(o=>o.type)).slice(0,200)}`);
                             // Çalışan kodu logla — outputs:[] durumunda debug için kritik
-                            if (item.code) log(`[CODE] çalışan kod (ilk 800): ${String(item.code).slice(0,800)}`);
+                            if (item.code) log(`[CODE] çalışan kod (ilk 2000): ${String(item.code).slice(0,2000)}`);
                             // Text çıktıları (hata mesajları da buraya düşer)
                             for (const _o of (item.outputs||[])) {
                                 if (_o.type === 'text' || _o.type === 'output_text') log(`[CODE] text output: ${String(_o.text||_o.output_text||'').slice(0,400)}`);
@@ -1026,10 +1031,15 @@ app.post("/run-agent", async (req, res) => {
                             // Dosya adından fileFieldsSet field key'i bul
                             // Kural: dosya adı (uzantısız) field adıyla eşleşiyorsa o field'a at
                             //        eşleşme yoksa tek file field varsa onu kullan, yoksa generic
+                            // Türkçe/özel karakter normalize et — AI ASCII-safe dosya adı kullanabilir
+                            const _toNorm = (s) => String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'')
+                                .replace(/[İıŞşÇçĞğÜüÖö]/g,c=>({'İ':'I','ı':'i','Ş':'S','ş':'s','Ç':'C','ç':'c','Ğ':'G','ğ':'g','Ü':'U','ü':'u','Ö':'O','ö':'o'}[c]||c))
+                                .toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
                             const _matchFileField = (filename) => {
-                                const base = (filename || '').replace(/\.[^.]+$/, '').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+                                const base = _toNorm((filename || '').replace(/\.[^.]+$/, ''));
                                 for (const k of fileFieldsSet) {
-                                    if (k.toLowerCase() === base || base.includes(k.toLowerCase()) || k.toLowerCase().includes(base)) return k;
+                                    const kn = _toNorm(k);
+                                    if (kn === base || base.includes(kn) || kn.includes(base)) return k;
                                 }
                                 if (fileFieldsSet.size === 1) return [...fileFieldsSet][0];
                                 return null; // eşleşme bulunamadı
