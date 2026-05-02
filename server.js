@@ -249,19 +249,26 @@ AKIŞ ÖRNEĞİ (veri toplayan otomasyon):
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-ÇIKTI FORMATI — ZORUNLU İKİ EK ALAN
+ÇIKTI FORMATI — ZORUNLU ALANLAR
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Her çalışmanın sonunda, JSON çıktına veya son mesajına MUTLAKA şu iki alanı ekle:
+Her çalışmanın sonunda JSON çıktına MUTLAKA şu alanları ekle:
 
 "configuration_notes_to_myself": "<SADECE gelecekte kullanacağın ID'ler, URL'ler, resource adları — key=value formatında, kısa ve öz. Örnek: template_doc_id=1GYz..., spreadsheet_id=1Bxi...>"
 
 ⚠️ DAVRANIŞ KURALI:
-• Bu alanı BOŞ bırakırsan mevcut not KORUNUR — değişmez. Bunu kasıtlı kullan: sadece yeni bir değer sakladığında dolu gönder.
+• Bu alanı BOŞ bırakırsan ("") mevcut not KORUNUR — değişmez. Bunu kasıtlı kullan: sadece yeni bir değer sakladığında dolu gönder.
 • Dolu gönderirsen eski notun ÜZERİNE YAZILIR. Mevcut notu silmek istemiyorsan eski değerleri de dahil et.
 • Sadece ileride referans vereceğin değerleri yaz — ne yaptığının açıklamasını değil.
 
-"notes_to_user": "<Kullanıcıya yönelik özet: ne yaptın, ne konfigüre ettin, kullanıcının bilmesi gereken bir şey var mı, bir sonraki adım ne olmalı?>"
+"notes_to_user": "<Kullanıcıya yönelik kısa özet (1-3 cümle): ne yaptın, varsa önemli bilgi, varsa sonraki adım. Sade, teknik olmayan dil.>"
+
+"predictedAction": "<Kullanıcıya gösterilecek kısa not — 1-2 cümle, sade dil. Örnek: 'İhtar mektubu hazırlandı ve PDF olarak eklendi.' veya 'E-posta taslağı oluşturuldu, göndermeyi onaylamanız gerekiyor.'>"
+
+⚠️ predictedAction ZORUNLUDUR — her çalışmada doldur.
+   Bu alan final_json'a EKLENMEZ; sistem bunu kullanıcıya ayrı bir bildirim mesajı olarak gösterir.
+   notes_to_user (final_json içinde kayıt olarak kalır) ile karıştırma.
+   predictedAction boş kalırsa kullanıcı ekranda hiçbir şey görmez.
 
 ⚠️ KISMI SORUMLULUK — OTOMASYONu SADECE TAMAMLAMAK DEĞİL, KONFİGÜRE ETMEK DE OLABILIR:
 Sana bir otomasyon kurma veya düzenleme görevi verilebilir. Bu durumda görevin:
@@ -519,14 +526,15 @@ app.post("/run-agent", async (req, res) => {
         // Önceki çalışmadan gelen konfigürasyon notları — agent'a "geçmişini" ver
         // Bubble'da kayıtlı configuration_notes_to_myself bir önceki çalışmadan iletiliyor
         const prevConfigNotes = (properties.configuration_notes_to_myself || "").trim();
+        const insertIdx = messagesArray.findIndex(m => m.role !== 'system') !== -1
+            ? messagesArray.findIndex(m => m.role !== 'system')
+            : messagesArray.length;
+
         if (prevConfigNotes) {
             log(`[CONFIG-NOTES] Önceki konfigürasyon notları agent'a iletiliyor (${prevConfigNotes.length} karakter)`);
-            // Trigger/user mesajından hemen sonra, bir "assistant" sesi gibi değil,
-            // system bağlamı olarak inject et
-            const insertIdx = messagesArray.findIndex(m => m.role !== 'system') ?? messagesArray.length;
             messagesArray.splice(insertIdx, 0, {
                 role: "user",
-                content: `[GEÇMİŞ KONFİGÜRASYON NOTLARIM]\nBu otomasyonu daha önce kurdum. O çalışmadan kendime bıraktığım notlar:\n\n${prevConfigNotes}\n\nBu notları referans alarak görevi tamamla.`
+                content: `[GEÇMİŞ KONFİGÜRASYON NOTLARIM]\nBu göreve ait önceki çalışmadan kendime bıraktığım notlar:\n\n${prevConfigNotes}\n\nBu notları referans alarak görevi talimatlarıma göre tamamla.`
             });
         }
 
