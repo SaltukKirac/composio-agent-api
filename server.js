@@ -2129,12 +2129,12 @@ app.post("/manage-triggers", async (req, res) => {
                 axiosResponse = await axios.post(postUrl, postData, { headers });
                 console.log(`[TEMP] ✅ API Yanıtı Alındı! HTTP Status: ${axiosResponse.status}`);
                 console.log(`[TEMP] ✅ API Yanıt Data:`, JSON.stringify(axiosResponse.data));
-                // Oluşturulan trigger'ı hemen DISABLED yap
+                // Oluşturulan trigger'ı hemen disable yap (Composio V3: lowercase 'enable'/'disable')
                 const _newId = axiosResponse.data?.id || axiosResponse.data?.triggerId || axiosResponse.data?.trigger_instance_id;
                 if (_newId) {
                     try {
-                        await axios.patch(`${baseURL}/manage/${_newId}`, { status: "DISABLED" }, { headers });
-                        console.log(`[TEMP] ✅ Trigger DISABLED yapıldı: ${_newId}`);
+                        await axios.patch(`${baseURL}/manage/${_newId}`, { status: "disable" }, { headers });
+                        console.log(`[TEMP] ✅ Trigger disable yapıldı: ${_newId}`);
                     } catch(e) {
                         console.log(`[TEMP] ⚠️ Trigger disable başarısız (devam ediliyor): ${e.message}`);
                     }
@@ -2156,16 +2156,16 @@ app.post("/manage-triggers", async (req, res) => {
                 break;
                 
             case "enable":
-                // Tetikleyiciyi aktifleştir
+                // Tetikleyiciyi aktifleştir (Composio V3: status: "enable")
                 console.log(`[TEMP] ⚡ İşlem Tipi: ENABLE (${trigger_instance_id})`);
-                axiosResponse = await axios.patch(`${baseURL}/manage/${trigger_instance_id}`, { status: "ENABLED" }, { headers });
+                axiosResponse = await axios.patch(`${baseURL}/manage/${trigger_instance_id}`, { status: "enable" }, { headers });
                 console.log(`[TEMP] ✅ ENABLE Yanıtı Alındı! HTTP Status: ${axiosResponse.status}`);
                 break;
                 
             case "disable":
-                // Tetikleyiciyi devre dışı bırak
+                // Tetikleyiciyi devre dışı bırak (Composio V3: status: "disable")
                 console.log(`[TEMP] ⚡ İşlem Tipi: DISABLE (${trigger_instance_id})`);
-                axiosResponse = await axios.patch(`${baseURL}/manage/${trigger_instance_id}`, { status: "DISABLED" }, { headers });
+                axiosResponse = await axios.patch(`${baseURL}/manage/${trigger_instance_id}`, { status: "disable" }, { headers });
                 console.log(`[TEMP] ✅ DISABLE Yanıtı Alındı! HTTP Status: ${axiosResponse.status}`);
                 break;
                 
@@ -2177,15 +2177,15 @@ app.post("/manage-triggers", async (req, res) => {
                 break;
                 
             case "enable_batch": {
-                // Birden fazla trigger'ı paralel olarak ENABLED yap (fire-and-forget için)
+                // Birden fazla trigger'ı paralel olarak enable yap (Composio V3: lowercase)
                 console.log(`[TEMP] ⚡ İşlem Tipi: ENABLE_BATCH`);
                 const _batchIds = Array.isArray(trigger_instance_ids) ? trigger_instance_ids : [];
                 console.log(`[TEMP]  - enable edilecek ID sayısı: ${_batchIds.length}`);
                 const _batchResults = await Promise.allSettled(
-                    _batchIds.map(id => axios.patch(`${baseURL}/manage/${id}`, { status: "ENABLED" }, { headers }))
+                    _batchIds.map(id => axios.patch(`${baseURL}/manage/${id}`, { status: "enable" }, { headers }))
                 );
                 _batchResults.forEach((r, i) => {
-                    if (r.status === 'fulfilled') console.log(`[TEMP]  ✅ ENABLED: ${_batchIds[i]}`);
+                    if (r.status === 'fulfilled') console.log(`[TEMP]  ✅ enabled: ${_batchIds[i]}`);
                     else console.log(`[TEMP]  ⚠️ Başarısız: ${_batchIds[i]} — ${r.reason?.message}`);
                 });
                 axiosResponse = { data: { enabled: _batchIds.filter((_, i) => _batchResults[i].status === 'fulfilled') } };
