@@ -2142,18 +2142,23 @@ app.post("/manage-triggers", async (req, res) => {
                 break;
                 
             case "list":
-                // Aktif tetikleyicileri listele
-                let listUrl = `${baseURL}/active?`;
+                // TÜM tetikleyicileri listele — aktif ve pasif dahil
+                // /active → sadece enabled olanları döndürür (pasife alınca UI'dan kaybolur)
+                // baseURL doğrudan → tüm instance'ları döndürür
+                let listUrl = `${baseURL}?`;
                 if (connected_account_id) listUrl += `connected_account_id=${connected_account_id}&`;
-                if (user_id) listUrl += `user_id=${user_id}&entity_id=${user_id}`; // Her iki olası ismi de ekliyoruz
+                if (user_id) listUrl += `user_id=${user_id}&entity_id=${user_id}`;
                 
+                console.log(`[TEMP] ⚡ LIST isteği: ${listUrl}`);
                 axiosResponse = await axios.get(listUrl, { headers });
 
-                // GÜVENLİK FİLTRESİ: Gelen listede herkesin trigger'ı varsa, sadece bu user_id'ye ait olanları döndür.
+                // GÜVENLİK FİLTRESİ: sadece bu user_id'ye ait olanları döndür
                 if (user_id && axiosResponse.data && Array.isArray(axiosResponse.data.items)) {
                     axiosResponse.data.items = axiosResponse.data.items.filter(t => t.user_id === user_id || t.entity_id === user_id);
                 }
+                console.log(`[TEMP] ✅ LIST yanıtı: ${axiosResponse.data?.items?.length ?? '?'} trigger`);
                 break;
+
                 
             case "enable":
                 // Tetikleyiciyi aktifleştir (Composio V3: status: "enable")
