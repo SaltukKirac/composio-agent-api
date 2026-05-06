@@ -2142,10 +2142,9 @@ app.post("/manage-triggers", async (req, res) => {
                 break;
                 
             case "list":
-                // TÜM tetikleyicileri listele — aktif ve pasif dahil
-                // /active → sadece enabled olanları döndürür (pasife alınca UI'dan kaybolur)
-                // baseURL doğrudan → tüm instance'ları döndürür
-                let listUrl = `${baseURL}?`;
+                // Composio V3: sadece /active endpoint mevcut — tüm instance endpoint'i yok (404)
+                // Pasif trigger'lar frontend'de local state ile tutulur (bkz: _gaiaDisabledTrigsCache)
+                let listUrl = `${baseURL}/active?`;
                 if (connected_account_id) listUrl += `connected_account_id=${connected_account_id}&`;
                 if (user_id) listUrl += `user_id=${user_id}&entity_id=${user_id}`;
                 
@@ -2156,8 +2155,9 @@ app.post("/manage-triggers", async (req, res) => {
                 if (user_id && axiosResponse.data && Array.isArray(axiosResponse.data.items)) {
                     axiosResponse.data.items = axiosResponse.data.items.filter(t => t.user_id === user_id || t.entity_id === user_id);
                 }
-                console.log(`[TEMP] ✅ LIST yanıtı: ${axiosResponse.data?.items?.length ?? '?'} trigger`);
+                console.log(`[TEMP] ✅ LIST yanıtı: ${axiosResponse.data?.items?.length ?? '?'} aktif trigger`);
                 break;
+
 
                 
             case "enable":
